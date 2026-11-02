@@ -49,11 +49,30 @@ def _as_database(obj: Any, db_name: str):
     )
 
 
+def _factory_args(mongo_cfg: Dict[str, Any], db_name: str) -> list:
+    order = mongo_cfg.get("factory_args") or (
+        ["user", "password", "ip", "port", "database"] if "port" in mongo_cfg
+        else ["user", "password", "ip", "database"])
+    args = []
+    for key in order:
+        if key == "database":
+            args.append(db_name)
+            continue
+        if key not in mongo_cfg:
+            raise KeyError(f"mongodb.{key} is listed in factory_args but not set")
+        value = _env(mongo_cfg[key])
+        if key == "port" and isinstance(value, str) and value.strip().isdigit():
+            value = int(value)  # "${MONGO_PORT}" comes in as text
+        args.append(value)
+    return args
+
+
 def connect_mongo(mongo_cfg: Dict[str, Any], mongo_client=None):
     """Return the Database the Mongo tools will query.
 
     Two ways to configure it:
-    - factory: your own helper, called as factory(user, password, ip, database)
+    - factory: your own helper, called with the fields listed in `factory_args`, in that order.
+      Default order: (user, password, ip, database), or (user, password, ip, port, database) when port is set.
     - uri: a plain MongoDB connection string, opened with pymongo
     """
     db_name = _env(mongo_cfg["database"])
@@ -61,7 +80,7 @@ def connect_mongo(mongo_cfg: Dict[str, Any], mongo_client=None):
         return _as_database(mongo_client, db_name)
     if mongo_cfg.get("factory"):
         factory = _load_factory(mongo_cfg["factory"])
-        conn = factory(_env(mongo_cfg["user"]), _env(mongo_cfg["password"]), _env(mongo_cfg["ip"]), db_name)
+        conn = factory(*_factory_args(mongo_cfg, db_name))
         return _as_database(conn, db_name)
     from pymongo import MongoClient
     return MongoClient(_env(mongo_cfg["uri"]), serverSelectionTimeoutMS=5000)[db_name]

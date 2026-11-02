@@ -108,11 +108,15 @@ mongodb:
   user: ${MONGO_USER}
   password: ${MONGO_PW}
   ip: ${MONGO_IP}
+  port: 27017
   database: mydb
   allowed_collections: [orders, customers]
 ```
 
-程式會呼叫 `Clinet_mongo(user, password, ip, database)`，回傳值可以是：
+程式會呼叫 `Clinet_mongo(user, password, ip, port, database)`（沒寫 `port` 就是 `Clinet_mongo(user, password, ip, database)`）。
+參數順序不同時用 `factory_args` 指定，例如 `factory_args: [ip, port, user, password, database]`。
+
+回傳值可以是：
 - pymongo 的 `Database`
 - pymongo 的 `MongoClient`（會自動取 `database`）
 - 自訂類別，把上面兩種之一存在 `.db`、`.database`、`.client`、`.conn` 或 `.connection` 屬性

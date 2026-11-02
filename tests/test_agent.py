@@ -207,3 +207,16 @@ def test_connect_mongo_with_custom_factory(monkeypatch):
                             "password": "${MONGO_PW}", "ip": "10.0.0.1", "database": "mydb"})
         assert db.orders.count_documents({}) == 1, name
     assert seen == {"user": "u", "pw": "secret", "ip": "10.0.0.1", "db": "mydb"}
+
+
+def test_factory_args_with_port(monkeypatch):
+    from agent.config import _factory_args
+
+    monkeypatch.setenv("MONGO_PORT", "27018")
+    base = {"user": "u", "password": "p", "ip": "1.2.3.4"}
+    assert _factory_args(base, "db") == ["u", "p", "1.2.3.4", "db"]
+    assert _factory_args({**base, "port": "${MONGO_PORT}"}, "db") == ["u", "p", "1.2.3.4", 27018, "db"]
+    assert _factory_args({**base, "port": 27017, "factory_args": ["ip", "port", "user", "password", "database"]},
+                         "db") == ["1.2.3.4", 27017, "u", "p", "db"]
+    with pytest.raises(KeyError):
+        _factory_args({**base, "factory_args": ["user", "port"]}, "db")

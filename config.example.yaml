@@ -17,7 +17,10 @@ mongodb:
   user: ${MONGO_USER}              # use a read-only account
   password: ${MONGO_PW}
   ip: ${MONGO_IP}
+  port: 27017
   database: mydb
+  # Order the fields are passed to the factory. Default with port: user, password, ip, port, database
+  # factory_args: [user, password, ip, port, database]
   # Option B: remove the 5 lines above and use a connection string instead:
   # uri: ${MONGO_URI}
   # database: mydb
