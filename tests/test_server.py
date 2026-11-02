@@ -99,3 +99,14 @@ def test_llm_failure_returns_502():
     with client:
         r = client.post("/chat", json={"message": "x"})
     assert r.status_code == 502 and "boom" in r.json()["detail"]
+
+
+def test_skills_endpoint():
+    from agent.skills import SkillLibrary, parse_skill
+
+    client, _, _ = make_client([])
+    assert client.get("/skills").json() == []  # agent built by hand: no skills
+    client.app.state.sessions.template.skills = SkillLibrary(
+        [parse_skill("---\nname: revenue\ndescription: monthly revenue\ntools: [mongo_count]\n---\nsteps")])
+    assert client.get("/skills").json() == [{"name": "revenue", "description": "monthly revenue",
+                                             "tools": ["mongo_count"]}]

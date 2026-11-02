@@ -2,20 +2,32 @@
 from __future__ import annotations
 
 import importlib
-from typing import Any, Dict, Optional
+import os
+from typing import Any, Dict, List, Optional
 
 import yaml
 
 from .agent import DEFAULT_SYSTEM_PROMPT, Agent
 from .llm_client import LLMClient
+from .skills import SkillLibrary, load_skills
 from .tools.api_tools import _expand_env as _env, register_api_tools
-from .tools.mongo_tools import MongoTools
+from .tools.mongo_tools import MongoSource, MongoTools
 from .tools.registry import ConfirmFn, ToolRegistry
 
 
 def load_config(path: str) -> Dict[str, Any]:
     with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+        cfg = yaml.safe_load(f) or {}
+    # Relative paths in the config (skills_dir, notes_file) are resolved against the config file's folder.
+    cfg.setdefault("_config_dir", os.path.dirname(os.path.abspath(path)))
+    return cfg
+
+
+def _resolve_path(cfg: Dict[str, Any], path: str) -> str:
+    path = _env(path)
+    if os.path.isabs(path):
+        return path
+    return os.path.join(cfg.get("_config_dir") or os.getcwd(), path)
 
 
 def _load_factory(path: str):
@@ -148,22 +160,71 @@ def build_agent(cfg: Dict[str, Any], confirm: Optional[ConfirmFn] = None, mongo_
 
     registry = ToolRegistry(confirm=confirm, max_result_chars=cfg.get("max_result_chars", 8000))
 
-    mongo_cfg = cfg.get("mongodb")
-    if mongo_cfg:
-        MongoTools(
-            connect_mongo(mongo_cfg, mongo_client),
-            allowed_collections=mongo_cfg.get("allowed_collections"),
-            max_limit=mongo_cfg.get("max_limit", 50),
-            max_time_ms=mongo_cfg.get("max_time_ms", 10000),
-        ).register(registry)
+    mongo_tools = build_mongo_tools(cfg, mongo_client)
+    if mongo_tools:
+        mongo_tools.register(registry)
 
     register_api_tools(registry, cfg.get("apis") or [])
 
-    return Agent(llm, registry, system_prompt=cfg.get("system_prompt") or DEFAULT_SYSTEM_PROMPT,
-                 max_steps=cfg.get("max_steps", 8))
+    skills = SkillLibrary(load_skills(_resolve_path(cfg, cfg["skills_dir"])) if cfg.get("skills_dir") else [])
+    skills.check_tools(registry)
+    skills.register(registry)
+
+    prompt_parts = [cfg.get("system_prompt") or DEFAULT_SYSTEM_PROMPT]
+    if mongo_tools:
+        prompt_parts.append(mongo_tools.prompt_section())
+    prompt_parts.append(skills.prompt_section())
+    system_prompt = "\n\n".join(p.strip() for p in prompt_parts if p and p.strip())
+
+    agent = Agent(llm, registry, system_prompt=system_prompt, max_steps=cfg.get("max_steps", 8))
+    agent.skills = skills
+    return agent
+
+
+def mongo_source_configs(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """`mongodb:` may be one mapping (a single database) or a list of them (several databases)."""
+    mongo_cfg = cfg.get("mongodb")
+    if not mongo_cfg:
+        return []
+    if isinstance(mongo_cfg, dict):
+        return [{"name": "default", **mongo_cfg}]
+    if not isinstance(mongo_cfg, list):
+        raise ValueError("mongodb must be a mapping or a list of mappings")
+    for i, item in enumerate(mongo_cfg):
+        if not isinstance(item, dict) or not item.get("name"):
+            raise ValueError(f"mongodb[{i}] needs a 'name' when several databases are listed")
+    return mongo_cfg
+
+
+def _source_notes(cfg: Dict[str, Any], src_cfg: Dict[str, Any]) -> str:
+    notes = _env(src_cfg.get("notes") or "")
+    if src_cfg.get("notes_file"):
+        with open(_resolve_path(cfg, src_cfg["notes_file"]), encoding="utf-8") as f:
+            notes = (notes + "\n\n" + f.read()).strip()
+    return notes
+
+
+def build_mongo_tools(cfg: Dict[str, Any], mongo_client=None) -> Optional[MongoTools]:
+    """`mongo_client` (tests): one client for every source, or a dict {source name: client}."""
+    sources = []
+    for src_cfg in mongo_source_configs(cfg):
+        name = src_cfg["name"]
+        client = mongo_client.get(name) if isinstance(mongo_client, dict) else mongo_client
+        sources.append(MongoSource(
+            connect_mongo(src_cfg, client),
+            name=name,
+            description=_env(src_cfg.get("description") or ""),
+            notes=_source_notes(cfg, src_cfg),
+            allowed_collections=src_cfg.get("allowed_collections"),
+            max_limit=src_cfg.get("max_limit", 50),
+            max_time_ms=src_cfg.get("max_time_ms", 10000),
+        ))
+    return MongoTools(sources=sources) if sources else None
 
 
 def new_session(template: Agent) -> Agent:
     """A fresh conversation that shares the template's LLM client and tools."""
-    return Agent(template.llm, template.registry, system_prompt=template.messages[0]["content"],
-                 max_steps=template.max_steps)
+    agent = Agent(template.llm, template.registry, system_prompt=template.messages[0]["content"],
+                  max_steps=template.max_steps)
+    agent.skills = template.skills
+    return agent

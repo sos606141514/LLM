@@ -142,6 +142,13 @@ def create_app(agent: Optional[Agent] = None, api_key: Optional[str] = None) -> 
         return [{"name": t.name, "description": t.description,
                  "require_confirmation": t.require_confirmation, "parameters": t.parameters} for t in tools]
 
+    @app.get("/skills", dependencies=[Depends(check_key)])
+    def list_skills():
+        skills = app.state.sessions.template.skills
+        if not skills:
+            return []
+        return [{"name": s.name, "description": s.description, "tools": s.tools} for s in skills.skills.values()]
+
     # Plain `def`: FastAPI runs it in a thread pool, so the blocking LLM/Mongo/HTTP calls don't block the server.
     @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(check_key)])
     def chat(req: ChatRequest):
