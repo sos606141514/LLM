@@ -95,3 +95,9 @@ def build_agent(cfg: Dict[str, Any], confirm: Optional[ConfirmFn] = None, mongo_
 
     return Agent(llm, registry, system_prompt=cfg.get("system_prompt") or DEFAULT_SYSTEM_PROMPT,
                  max_steps=cfg.get("max_steps", 8))
+
+
+def new_session(template: Agent) -> Agent:
+    """A fresh conversation that shares the template's LLM client and tools."""
+    return Agent(template.llm, template.registry, system_prompt=template.messages[0]["content"],
+                 max_steps=template.max_steps)

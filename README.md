@@ -40,6 +40,52 @@ python main.py                          # 互動模式
 python main.py -q "上個月已付款訂單總金額是多少？" -v
 ```
 
+### 以 FastAPI 服務執行
+
+```bash
+export AGENT_API_KEY=自訂一組密鑰        # 建議設定；設定後每個請求都要帶 X-API-Key
+uvicorn server:app --host 0.0.0.0 --port 8000
+# 或 python server.py（可用 PORT、HOST 環境變數）
+```
+
+啟動後可打開 `http://localhost:8000/docs` 看互動式 API 文件並直接測試。
+
+| 方法 | 路徑 | 用途 |
+|---|---|---|
+| GET | `/health` | 健康檢查（不需金鑰） |
+| GET | `/tools` | 列出 agent 可用的工具 |
+| POST | `/chat` | 問問題 |
+| DELETE | `/sessions/{session_id}` | 清除某段對話記錄 |
+
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "X-API-Key: $AGENT_API_KEY" -H "Content-Type: application/json" \
+  -d '{"message": "上個月有幾筆已付款訂單？"}'
+```
+
+回應：
+
+```json
+{
+  "session_id": "13fa3cdc...",
+  "answer": "上個月已付款訂單共 2 筆。",
+  "tool_calls": [{"name": "mongo_count", "arguments": {...}, "result": {"count": 2}}],
+  "pending_actions": []
+}
+```
+
+- **連續對話**：下一個請求帶上同一個 `session_id`，agent 會記得前面的內容。不帶就開新對話。對話存在記憶體，閒置超過 `SESSION_TTL_SECONDS`（預設 3600）會清除，服務重啟也會清空。
+- **需要確認的 API**（非 GET 預設需要）：預設不執行，會出現在 `pending_actions`。確認後用同一個 `session_id` 再送一次，並帶上 `"allow_actions": ["trigger_report_job"]`（只允許這些工具）或 `"allow_actions": true`（允許這次請求的所有動作）。
+
+| 環境變數 | 預設 | 說明 |
+|---|---|---|
+| `AGENT_CONFIG` | `config.yaml` | 設定檔路徑 |
+| `AGENT_API_KEY` | 空（不檢查） | 請求需帶的 `X-API-Key` |
+| `SESSION_TTL_SECONDS` | 3600 | 對話閒置多久後清除 |
+| `MAX_SESSIONS` | 1000 | 記憶體中最多保留幾段對話 |
+
+> 對話存在單一程序的記憶體中，請用單一 worker 執行（不要加 `--workers 2` 以上），否則同一段對話的請求可能送到不同程序而找不到記錄。
+
 在程式中使用：
 
 ```python

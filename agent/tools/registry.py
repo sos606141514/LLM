@@ -45,8 +45,11 @@ class ToolRegistry:
     def schemas(self) -> List[Dict[str, Any]]:
         return [t.to_openai_schema() for t in self.tools.values()]
 
-    def call(self, name: str, arguments: Any) -> str:
-        """Run a tool and always return a string (errors go back to the model as text)."""
+    def call(self, name: str, arguments: Any, confirm: Optional[ConfirmFn] = None) -> str:
+        """Run a tool and always return a string (errors go back to the model as text).
+
+        `confirm` overrides the registry-wide confirmation handler for this call only.
+        """
         tool = self.tools.get(name)
         if tool is None:
             return _err(f"Unknown tool '{name}'. Available: {list(self.tools)}")
@@ -60,7 +63,8 @@ class ToolRegistry:
             return _err("Arguments must be a JSON object")
 
         if tool.require_confirmation:
-            if self.confirm is None or not self.confirm(name, arguments):
+            handler = confirm or self.confirm
+            if handler is None or not handler(name, arguments):
                 return _err("User rejected or no confirmation handler; the call was not executed.")
 
         logger.info("tool call %s %s", name, arguments)

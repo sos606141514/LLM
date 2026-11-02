@@ -6,7 +6,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from .llm_client import LLMClient
-from .tools.registry import ToolRegistry
+from .tools.registry import ConfirmFn, ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +26,15 @@ class Agent:
         self.registry = registry
         self.max_steps = max_steps
         self.messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+        # Tool calls made during the last run(): [{"name", "arguments", "result"}]
+        self.last_trace: List[Dict[str, Any]] = []
 
     def reset(self) -> None:
         self.messages = self.messages[:1]
 
-    def run(self, user_input: str) -> str:
+    def run(self, user_input: str, confirm: Optional[ConfirmFn] = None) -> str:
+        """Answer one user message. `confirm` overrides the registry's confirmation handler."""
+        self.last_trace = []
         self.messages.append({"role": "user", "content": user_input})
         tools = self.registry.schemas()
 
@@ -52,7 +56,8 @@ class Agent:
                 } for tc in resp.tool_calls],
             })
             for tc in resp.tool_calls:
-                result = self.registry.call(tc.name, tc.arguments)
+                result = self.registry.call(tc.name, tc.arguments, confirm=confirm)
+                self.last_trace.append({"name": tc.name, "arguments": tc.arguments, "result": result})
                 logger.debug("step %d %s -> %s", step, tc.name, result[:300])
                 self.messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": result})
 
