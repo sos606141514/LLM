@@ -261,3 +261,23 @@ def test_class_with_connect_method(monkeypatch):
 
     with pytest.raises(TypeError, match="Could not find a MongoDB connection"):
         connect_mongo({**base, "factory": "fake_mongo_cls:Mongo"})  # forgot connect_method
+
+
+def test_builtin_mongo_connection(monkeypatch):
+    from agent.config import mongo_client_kwargs
+
+    monkeypatch.setenv("MONGO_PW", "p@ss:word")
+    kw = mongo_client_kwargs({"user": "u", "password": "${MONGO_PW}", "ip": "10.0.0.5", "port": "27018",
+                              "database": "d", "options": {"directConnection": True}})
+    assert kw == {"serverSelectionTimeoutMS": 5000, "host": "10.0.0.5", "port": 27018, "username": "u",
+                  "password": "p@ss:word", "authSource": "admin", "directConnection": True}
+    assert mongo_client_kwargs({"ip": "h", "database": "d"}) == {"serverSelectionTimeoutMS": 5000,
+                                                                 "host": "h", "port": 27017}
+    assert mongo_client_kwargs({"uri": "mongodb://x", "database": "d"})["host"] == "mongodb://x"
+    with pytest.raises(KeyError):
+        mongo_client_kwargs({"database": "d"})
+
+    # the kwargs are accepted by the real pymongo client (connect=False: no network)
+    import pymongo
+    c = pymongo.MongoClient(connect=False, **kw)  # raises if any option name/value is invalid
+    c.close()

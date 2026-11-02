@@ -11,22 +11,18 @@ llm:
   verify_ssl: true                 # or a path to your internal CA bundle
 
 mongodb:
-  # Option A: your own connection function or class.
-  # "file:Name" -> e.g. class Mongo in mymongo.py next to main.py: mymongo:Mongo
-  factory: mymongo:Mongo
-  connect_method: connectmongo     # method to call after creating the object; remove if not needed
-  user: ${MONGO_USER}              # use a read-only account
+  user: ${MONGO_USER}              # use a read-only account; remove user/password if no login
   password: ${MONGO_PW}
   ip: ${MONGO_IP}
   port: 27017
   database: mydb
-  # Arguments, in order. Default: Mongo(user, password, ip, port, database), then m.connectmongo()
-  # If the credentials go to connectmongo instead:
-  # factory_args: []
-  # connect_args: [user, password, ip, port, database]
-  # Option B: remove the 5 lines above and use a connection string instead:
-  # uri: ${MONGO_URI}
-  # database: mydb
+  auth_source: admin               # database the account is created in (usually admin)
+  # options: {directConnection: true}   # extra pymongo options, e.g. tls, replicaSet
+  #
+  # Other ways to connect (use instead of the lines above):
+  #   uri: ${MONGO_URI}                         # a connection string
+  #   factory: mymongo:Mongo                    # your own connection class/function
+  #   connect_method: connectmongo
   allowed_collections: [orders, customers]   # remove to allow every collection
   max_limit: 50
   max_time_ms: 10000

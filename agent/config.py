@@ -87,12 +87,13 @@ def _factory_args(mongo_cfg: Dict[str, Any], db_name: str) -> list:
 def connect_mongo(mongo_cfg: Dict[str, Any], mongo_client=None):
     """Return the Database the Mongo tools will query.
 
-    Two ways to configure it:
+    Three ways to configure it (checked in this order):
     - factory: your own function or class, called with the fields listed in `factory_args`, in that order.
       Default order: (user, password, ip, database), or (user, password, ip, port, database) when port is set.
       connect_method (optional): a method to call on the created object to open the connection,
       with the fields listed in `connect_args` (default: none).
     - uri: a plain MongoDB connection string, opened with pymongo
+    - user / password / ip / port: opened with pymongo directly (the default)
     """
     db_name = _env(mongo_cfg["database"])
     if mongo_client is not None:
@@ -107,7 +108,29 @@ def connect_mongo(mongo_cfg: Dict[str, Any], mongo_client=None):
                 return _as_database(returned, db_name)
         return _as_database(obj, db_name)
     from pymongo import MongoClient
-    return MongoClient(_env(mongo_cfg["uri"]), serverSelectionTimeoutMS=5000)[db_name]
+    return MongoClient(**mongo_client_kwargs(mongo_cfg))[db_name]
+
+
+def mongo_client_kwargs(mongo_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Keyword arguments for pymongo.MongoClient from the config.
+
+    Either `uri`, or user / password / ip / port (+ optional auth_source, options).
+    """
+    kwargs: Dict[str, Any] = {"serverSelectionTimeoutMS": 5000}
+    if mongo_cfg.get("uri"):
+        kwargs["host"] = _env(mongo_cfg["uri"])
+    else:
+        if not mongo_cfg.get("ip"):
+            raise KeyError("mongodb needs either 'uri' or 'ip' (plus user/password/port)")
+        port = _env(mongo_cfg.get("port", 27017))
+        kwargs.update(host=_env(mongo_cfg["ip"]), port=int(port))
+        user = _env(mongo_cfg.get("user"))
+        if user:  # leave out for a server without login
+            kwargs.update(username=user, password=_env(mongo_cfg.get("password")),
+                          authSource=_env(mongo_cfg.get("auth_source", "admin")))
+    # Anything else pymongo accepts, e.g. {tls: true, directConnection: true, replicaSet: rs0}
+    kwargs.update({k: _env(v) for k, v in (mongo_cfg.get("options") or {}).items()})
+    return kwargs
 
 
 def build_agent(cfg: Dict[str, Any], confirm: Optional[ConfirmFn] = None, mongo_client=None) -> Agent:

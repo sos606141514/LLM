@@ -97,7 +97,26 @@ print(agent.run("幫我查訂單 A123 的狀態，如果還沒出貨就觸發報
 
 ## MongoDB 連線
 
-### 用自己的連線套件（例如 `mymongo.py` 裡的 class `Mongo`，用 `connectmongo()` 連線）
+### 直接連線（預設）
+
+`config.yaml` 填帳號、密碼、IP、port、資料庫即可，不需要其他套件：
+
+```yaml
+mongodb:
+  user: ${MONGO_USER}
+  password: ${MONGO_PW}
+  ip: ${MONGO_IP}
+  port: 27017
+  database: mydb
+  auth_source: admin          # 帳號建立在哪個資料庫，通常是 admin；不確定就先用 admin
+  allowed_collections: [orders, customers]
+```
+
+- 密碼裡有 `@`、`:` 等特殊字元也沒關係，不用另外編碼
+- MongoDB 不需要登入時，把 `user`、`password` 刪掉
+- 其他 pymongo 選項放在 `options`，例如 `options: {tls: true}`、`options: {replicaSet: rs0}`
+
+### 用自己的連線套件（選用，例如 `mymongo.py` 裡的 class `Mongo`，用 `connectmongo()` 連線）
 
 1. 把 `mymongo.py` 放到 `main.py` 旁邊（或用 `pip install` 安裝）
 2. 在 `config.yaml` 填：
