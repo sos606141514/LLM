@@ -220,3 +220,44 @@ def test_factory_args_with_port(monkeypatch):
                          "db") == ["1.2.3.4", 27017, "u", "p", "db"]
     with pytest.raises(KeyError):
         _factory_args({**base, "factory_args": ["user", "port"]}, "db")
+
+
+def test_class_with_connect_method(monkeypatch):
+    import types
+
+    from agent.config import connect_mongo
+
+    client = mongomock.MongoClient()
+    client["mydb"].orders.insert_one({"x": 1})
+
+    class Mongo:  # connection opened by a method, stored under a custom attribute name
+        def __init__(self, user, pw, ip, port, db):
+            self.args = (user, pw, ip, port, db)
+            self._mongo = None
+
+        def connectmongo(self):
+            self._mongo = client
+
+        def save(self, *a):
+            raise AssertionError("agent must never call save")
+
+    class MongoNoInit:  # __init__ takes nothing, connect method takes the credentials and returns the db
+        def connectmongo(self, user, pw, ip, port, db):
+            assert (user, pw, ip, port, db) == ("u", "p", "1.2.3.4", 27017, "mydb")
+            return client[db]
+
+    mod = types.ModuleType("fake_mongo_cls")
+    mod.Mongo, mod.MongoNoInit = Mongo, MongoNoInit
+    monkeypatch.setitem(sys.modules, mod.__name__, mod)
+    base = {"user": "u", "password": "p", "ip": "1.2.3.4", "port": 27017, "database": "mydb"}
+
+    db = connect_mongo({**base, "factory": "fake_mongo_cls:Mongo", "connect_method": "connectmongo"})
+    assert db.orders.count_documents({}) == 1
+
+    db = connect_mongo({**base, "factory": "fake_mongo_cls:MongoNoInit", "factory_args": [],
+                        "connect_method": "connectmongo",
+                        "connect_args": ["user", "password", "ip", "port", "database"]})
+    assert db.orders.count_documents({}) == 1
+
+    with pytest.raises(TypeError, match="Could not find a MongoDB connection"):
+        connect_mongo({**base, "factory": "fake_mongo_cls:Mongo"})  # forgot connect_method

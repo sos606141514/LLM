@@ -97,14 +97,15 @@ print(agent.run("幫我查訂單 A123 的狀態，如果還沒出貨就觸發報
 
 ## MongoDB 連線
 
-### 用自己的連線套件（`Clinet_mongo(user, pw, ip, db)`）
+### 用自己的連線套件（例如 `mymongo.py` 裡的 class `Mongo`，用 `connectmongo()` 連線）
 
-1. 把套件放到 `main.py` 旁邊（例如 `mongo_client.py`），或用 `pip install` 安裝
+1. 把 `mymongo.py` 放到 `main.py` 旁邊（或用 `pip install` 安裝）
 2. 在 `config.yaml` 填：
 
 ```yaml
 mongodb:
-  factory: mongo_client:Clinet_mongo   # 「模組名:函式名」
+  factory: mymongo:Mongo           # 「檔名:class 或函式名」
+  connect_method: connectmongo     # 建立物件後要呼叫的連線方法；不需要就刪掉
   user: ${MONGO_USER}
   password: ${MONGO_PW}
   ip: ${MONGO_IP}
@@ -113,13 +114,24 @@ mongodb:
   allowed_collections: [orders, customers]
 ```
 
-程式會呼叫 `Clinet_mongo(user, password, ip, port, database)`（沒寫 `port` 就是 `Clinet_mongo(user, password, ip, database)`）。
-參數順序不同時用 `factory_args` 指定，例如 `factory_args: [ip, port, user, password, database]`。
+程式會執行：
 
-回傳值可以是：
-- pymongo 的 `Database`
-- pymongo 的 `MongoClient`（會自動取 `database`）
-- 自訂類別，把上面兩種之一存在 `.db`、`.database`、`.client`、`.conn` 或 `.connection` 屬性
+```python
+m = Mongo(user, password, ip, port, database)   # 沒寫 port 就是 Mongo(user, password, ip, database)
+m.connectmongo()
+```
+
+帳密如果是傳給 `connectmongo` 而不是 `Mongo()`：
+
+```yaml
+  factory_args: []
+  connect_args: [user, password, ip, port, database]
+```
+
+參數順序不同時，照你的順序排 `factory_args` / `connect_args`。
+
+連線後，程式會在物件的屬性裡自動找出 pymongo 的 `MongoClient` 或 `Database`（屬性名稱不限），
+或使用 `connectmongo()` 的回傳值。agent 只用這個連線做唯讀查詢，**不會呼叫你 class 裡的其他 function（例如儲存）**。
 
 ### 用連線字串
 

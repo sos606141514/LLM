@@ -31,35 +31,43 @@ def _has_method(obj: Any, name: str) -> bool:
     return callable(getattr(type(obj), name, None))
 
 
+def _is_client(obj: Any) -> bool:
+    return _has_method(obj, "list_database_names")
+
+
+def _is_database(obj: Any) -> bool:
+    return _has_method(obj, "list_collection_names") and not _is_client(obj)
+
+
 def _as_database(obj: Any, db_name: str):
-    """Accept whatever the connection helper returns and get a pymongo-style Database from it."""
-    if _has_method(obj, "list_database_names"):
+    """Accept whatever the connection helper gives back and get a pymongo-style Database from it."""
+    if _is_client(obj):
         return obj[db_name]             # a MongoClient
-    if _has_method(obj, "list_collection_names"):
+    if _is_database(obj):
         return obj                      # already a Database
-    for attr in ("db", "database", "client", "conn", "connection"):  # a wrapper class holding one
-        inner = vars(obj).get(attr) if hasattr(obj, "__dict__") else None
-        if inner is not None and (_has_method(inner, "list_database_names")
-                                  or _has_method(inner, "list_collection_names")):
-            return _as_database(inner, db_name)
+    # An object of your own class: look through its attributes for a Database first, then a MongoClient.
+    attrs = vars(obj) if hasattr(obj, "__dict__") else {}
+    for value in attrs.values():
+        if _is_database(value):
+            return value
+    for value in attrs.values():
+        if _is_client(value):
+            return value[db_name]
     raise TypeError(
-        f"Could not get a MongoDB Database from {type(obj).__name__}. "
-        "The connection helper should return a pymongo Database or MongoClient "
-        "(or an object with a .db / .client attribute holding one)."
+        f"Could not find a MongoDB connection in {type(obj).__name__} (attributes: {sorted(attrs)}). "
+        "After connecting, the object should hold a pymongo Database or MongoClient in one of its "
+        "attributes, or the connect method should return one."
     )
 
 
-def _factory_args(mongo_cfg: Dict[str, Any], db_name: str) -> list:
-    order = mongo_cfg.get("factory_args") or (
-        ["user", "password", "ip", "port", "database"] if "port" in mongo_cfg
-        else ["user", "password", "ip", "database"])
+def _args_from(mongo_cfg: Dict[str, Any], keys: list, db_name: str) -> list:
     args = []
-    for key in order:
+    for key in keys:
         if key == "database":
             args.append(db_name)
             continue
         if key not in mongo_cfg:
-            raise KeyError(f"mongodb.{key} is listed in factory_args but not set")
+            raise KeyError(f"mongodb.{key} is used as an argument but not set")
         value = _env(mongo_cfg[key])
         if key == "port" and isinstance(value, str) and value.strip().isdigit():
             value = int(value)  # "${MONGO_PORT}" comes in as text
@@ -67,12 +75,23 @@ def _factory_args(mongo_cfg: Dict[str, Any], db_name: str) -> list:
     return args
 
 
+def _factory_args(mongo_cfg: Dict[str, Any], db_name: str) -> list:
+    if "factory_args" in mongo_cfg:   # may be [] for a class whose __init__ takes nothing
+        order = mongo_cfg["factory_args"] or []
+    else:
+        order = (["user", "password", "ip", "port", "database"] if "port" in mongo_cfg
+                 else ["user", "password", "ip", "database"])
+    return _args_from(mongo_cfg, order, db_name)
+
+
 def connect_mongo(mongo_cfg: Dict[str, Any], mongo_client=None):
     """Return the Database the Mongo tools will query.
 
     Two ways to configure it:
-    - factory: your own helper, called with the fields listed in `factory_args`, in that order.
+    - factory: your own function or class, called with the fields listed in `factory_args`, in that order.
       Default order: (user, password, ip, database), or (user, password, ip, port, database) when port is set.
+      connect_method (optional): a method to call on the created object to open the connection,
+      with the fields listed in `connect_args` (default: none).
     - uri: a plain MongoDB connection string, opened with pymongo
     """
     db_name = _env(mongo_cfg["database"])
@@ -80,8 +99,13 @@ def connect_mongo(mongo_cfg: Dict[str, Any], mongo_client=None):
         return _as_database(mongo_client, db_name)
     if mongo_cfg.get("factory"):
         factory = _load_factory(mongo_cfg["factory"])
-        conn = factory(*_factory_args(mongo_cfg, db_name))
-        return _as_database(conn, db_name)
+        obj = factory(*_factory_args(mongo_cfg, db_name))
+        method = mongo_cfg.get("connect_method")
+        if method:
+            returned = getattr(obj, method)(*_args_from(mongo_cfg, mongo_cfg.get("connect_args") or [], db_name))
+            if returned is not None and (_is_client(returned) or _is_database(returned)):
+                return _as_database(returned, db_name)
+        return _as_database(obj, db_name)
     from pymongo import MongoClient
     return MongoClient(_env(mongo_cfg["uri"]), serverSelectionTimeoutMS=5000)[db_name]
 

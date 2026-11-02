@@ -11,16 +11,19 @@ llm:
   verify_ssl: true                 # or a path to your internal CA bundle
 
 mongodb:
-  # Option A: your own connection helper, called as Clinet_mongo(user, password, ip, database).
-  # "module:function" -> e.g. if it lives in mongo_client.py next to main.py: mongo_client:Clinet_mongo
-  factory: mongo_client:Clinet_mongo
+  # Option A: your own connection function or class.
+  # "file:Name" -> e.g. class Mongo in mymongo.py next to main.py: mymongo:Mongo
+  factory: mymongo:Mongo
+  connect_method: connectmongo     # method to call after creating the object; remove if not needed
   user: ${MONGO_USER}              # use a read-only account
   password: ${MONGO_PW}
   ip: ${MONGO_IP}
   port: 27017
   database: mydb
-  # Order the fields are passed to the factory. Default with port: user, password, ip, port, database
-  # factory_args: [user, password, ip, port, database]
+  # Arguments, in order. Default: Mongo(user, password, ip, port, database), then m.connectmongo()
+  # If the credentials go to connectmongo instead:
+  # factory_args: []
+  # connect_args: [user, password, ip, port, database]
   # Option B: remove the 5 lines above and use a connection string instead:
   # uri: ${MONGO_URI}
   # database: mydb
