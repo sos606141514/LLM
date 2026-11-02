@@ -1,0 +1,53 @@
+# Copy to config.yaml. ${VAR} values are read from environment variables.
+
+llm:
+  base_url: ${LLM_BASE_URL}        # e.g. http://llm.internal:8000/v1  (POST {base_url}/chat/completions)
+  model: ${LLM_MODEL}
+  api_key: ${LLM_API_KEY}          # sent as "Authorization: Bearer ..."; leave empty if not needed
+  headers: {}                      # extra headers, e.g. {X-Tenant: abc}
+  tool_mode: native                # native = API supports OpenAI `tools`; prompt = it doesn't
+  temperature: 0
+  timeout: 120
+  verify_ssl: true                 # or a path to your internal CA bundle
+
+mongodb:
+  uri: ${MONGO_URI}                # use a read-only user
+  database: mydb
+  allowed_collections: [orders, customers]   # remove to allow every collection
+  max_limit: 50
+  max_time_ms: 10000
+
+# Each entry becomes one tool the model can call. `parameters` is a JSON Schema.
+# GET/DELETE send the arguments as query string, others as JSON body; {name} in the URL is a path parameter.
+# require_confirmation defaults to true for anything that isn't GET.
+apis:
+  - name: get_order_status
+    description: Get the shipping status of an order
+    method: GET
+    url: https://api.internal/orders/{order_id}/status
+    headers:
+      Authorization: Bearer ${ORDER_API_TOKEN}
+    parameters:
+      type: object
+      properties:
+        order_id: {type: string, description: Order ID}
+      required: [order_id]
+
+  - name: trigger_report_job
+    description: Start a report generation job
+    method: POST
+    url: https://api.internal/jobs/report
+    headers:
+      Authorization: Bearer ${JOB_API_TOKEN}
+    require_confirmation: true
+    parameters:
+      type: object
+      properties:
+        report_type: {type: string, enum: [daily_sales, inventory]}
+        date: {type: string, description: "YYYY-MM-DD"}
+      required: [report_type]
+
+max_steps: 8
+max_result_chars: 8000
+# system_prompt: |
+#   Your own instructions...

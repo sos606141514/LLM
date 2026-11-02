@@ -1,0 +1,6 @@
+requests>=2.31
+pymongo>=4.6
+PyYAML>=6.0
+# tests
+pytest>=8.0
+mongomock>=4.1
