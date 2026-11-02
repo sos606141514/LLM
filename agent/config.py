@@ -9,6 +9,7 @@ import yaml
 
 from .agent import DEFAULT_SYSTEM_PROMPT, Agent
 from .llm_client import LLMClient
+from .skills import SkillLibrary, load_skills
 from .tools.api_tools import _expand_env as _env, register_api_tools
 from .tools.mongo_tools import MongoSource, MongoTools
 from .tools.registry import ConfirmFn, ToolRegistry
@@ -165,12 +166,19 @@ def build_agent(cfg: Dict[str, Any], confirm: Optional[ConfirmFn] = None, mongo_
 
     register_api_tools(registry, cfg.get("apis") or [])
 
+    skills = SkillLibrary(load_skills(_resolve_path(cfg, cfg["skills_dir"])) if cfg.get("skills_dir") else [])
+    skills.check_tools(registry)
+    skills.register(registry)
+
     prompt_parts = [cfg.get("system_prompt") or DEFAULT_SYSTEM_PROMPT]
     if mongo_tools:
         prompt_parts.append(mongo_tools.prompt_section())
+    prompt_parts.append(skills.prompt_section())
     system_prompt = "\n\n".join(p.strip() for p in prompt_parts if p and p.strip())
 
-    return Agent(llm, registry, system_prompt=system_prompt, max_steps=cfg.get("max_steps", 8))
+    agent = Agent(llm, registry, system_prompt=system_prompt, max_steps=cfg.get("max_steps", 8))
+    agent.skills = skills
+    return agent
 
 
 def mongo_source_configs(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -216,5 +224,7 @@ def build_mongo_tools(cfg: Dict[str, Any], mongo_client=None) -> Optional[MongoT
 
 def new_session(template: Agent) -> Agent:
     """A fresh conversation that shares the template's LLM client and tools."""
-    return Agent(template.llm, template.registry, system_prompt=template.messages[0]["content"],
-                 max_steps=template.max_steps)
+    agent = Agent(template.llm, template.registry, system_prompt=template.messages[0]["content"],
+                  max_steps=template.max_steps)
+    agent.skills = template.skills
+    return agent

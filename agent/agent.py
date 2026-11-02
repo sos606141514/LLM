@@ -28,6 +28,8 @@ class Agent:
         self.messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         # Tool calls made during the last run(): [{"name", "arguments", "result"}]
         self.last_trace: List[Dict[str, Any]] = []
+        # SkillLibrary set by build_agent (None when the agent is built by hand)
+        self.skills = None
 
     def reset(self) -> None:
         self.messages = self.messages[:1]

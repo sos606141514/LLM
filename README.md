@@ -54,6 +54,7 @@ uvicorn server:app --host 0.0.0.0 --port 8000
 |---|---|---|
 | GET | `/health` | 健康檢查（不需金鑰） |
 | GET | `/tools` | 列出 agent 可用的工具 |
+| GET | `/skills` | 列出已載入的 skill |
 | POST | `/chat` | 問問題 |
 | DELETE | `/sessions/{session_id}` | 清除某段對話記錄 |
 
@@ -220,6 +221,7 @@ class MyLLM(LLMClient):
 | `mongo_find` | filter / projection / sort / limit / skip |
 | `mongo_count` | 計數 |
 | `mongo_aggregate` | 統計、分組、join |
+| `load_skill` | 讀取某個 skill 的完整步驟（有設定 `skills_dir` 時才有） |
 
 有多個連線時，每個工具都要帶 `source`。日期、ObjectId 使用 Extended JSON：`{"created": {"$gte": {"$date": "2026-01-01T00:00:00Z"}}}`、`{"_id": {"$oid": "..."}}`。
 
@@ -243,6 +245,35 @@ agent.registry.register(Tool(
     func=lambda text: my_alert(text), require_confirmation=True,
 ))
 ```
+
+## Skills（給模型的作業步驟）
+
+工具的 description 說明「這個工具做什麼」；skill 說明「某件事要怎麼做」，例如跨資料庫的報表算法、
+呼叫 API 的固定流程。這些規則不屬於任何一個工具，放進 skill 管理。
+
+1. 在 `skills/` 放 Markdown 檔，每個檔案一個 skill（範例：`skills/monthly_revenue.md`）：
+
+   ```markdown
+   ---
+   name: refund_order
+   description: 處理退款：查訂單、確認狀態、呼叫退款 API
+   tools: [mongo_find, refund_api]   # 選用；寫了不存在的工具，啟動時就會報錯
+   ---
+   1. 用 mongo_find 查 sales 的 orders，確認 status 是 "paid"
+   2. 已出貨的訂單不能直接退款，先告訴使用者
+   3. 呼叫 refund_api ……
+   ```
+
+2. 在 `config.yaml` 加上 `skills_dir: skills`（路徑相對於 config.yaml）
+
+運作方式：system prompt 只放每個 skill 的 `name` 和 `description`；模型判斷用得上時呼叫 `load_skill`
+拿完整步驟再照做。skill 再多，prompt 也只多幾行。
+
+| 規則類型 | 放哪裡 |
+|---|---|
+| 某個資料庫的欄位意義、單位 | 該連線的 `notes` / `notes_file` |
+| 跨資料庫的算法、API 操作流程 | `skills/` |
+| 每次都要遵守的總原則（語氣、語言） | `system_prompt` |
 
 ## 安全設計
 

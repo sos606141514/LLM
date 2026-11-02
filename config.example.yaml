@@ -77,6 +77,10 @@ apis:
         date: {type: string, description: "YYYY-MM-DD"}
       required: [report_type]
 
+# Skills: Markdown files with step-by-step procedures (report formulas, API workflows...).
+# Only their names and descriptions go into the system prompt; the model calls load_skill when needed.
+# skills_dir: skills               # path relative to this config file
+
 max_steps: 8
 max_result_chars: 8000
 # system_prompt: |

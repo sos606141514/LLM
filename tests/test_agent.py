@@ -360,3 +360,71 @@ def test_source_list_needs_unique_names():
     db = mongomock.MongoClient()["d"]
     with pytest.raises(ValueError, match="Duplicate"):
         MongoTools(sources=[MongoSource(db, "a"), MongoSource(db, "a")])
+
+
+# ---- skills --------------------------------------------------------------------
+def _write_skill(folder, filename, text):
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / filename).write_text(text, encoding="utf-8")
+
+
+def test_skills_are_listed_in_prompt_and_loaded_on_demand(tmp_path):
+    from agent.config import build_agent
+
+    skills = tmp_path / "skills"
+    _write_skill(skills, "revenue.md", "---\nname: revenue\ndescription: monthly paid revenue\n"
+                                       "tools: [mongo_aggregate]\n---\nStep 1: only status=paid\n---\nStep 2")
+    _write_skill(skills / "ops", "refund.md", "---\ndescription: refund an order\n---\nCheck the order first")
+    _write_skill(skills, "README.md", "not a skill")
+    client = mongomock.MongoClient()
+    llm = ScriptedLLM([
+        LLMResponse(None, [ToolCall("c1", "load_skill", '{"name": "revenue"}')]),
+        LLMResponse("done"),
+    ])
+    agent = build_agent({"_config_dir": str(tmp_path), "llm": {"base_url": "http://llm/v1", "model": "m"},
+                         "mongodb": {"uri": "mongodb://x", "database": "shop"}, "skills_dir": "skills"},
+                        mongo_client=client)
+    assert sorted(agent.skills.skills) == ["refund", "revenue"]  # name defaults to the file name
+    prompt = agent.messages[0]["content"]
+    assert "- revenue: monthly paid revenue" in prompt and "load_skill" in prompt
+    assert "only status=paid" not in prompt
+
+    agent.llm = llm
+    assert agent.run("revenue for March?") == "done"
+    loaded = json.loads(llm.seen[1][-1]["content"])
+    assert loaded["tools"] == ["mongo_aggregate"]
+    assert loaded["instructions"] == "Step 1: only status=paid\n---\nStep 2"  # '---' in the body is kept
+    assert "Unknown skill" in agent.registry.call("load_skill", {"name": "nope"})
+
+
+def test_skill_errors_are_reported_at_startup(tmp_path):
+    from agent.config import build_agent
+    from agent.skills import SkillLibrary, parse_skill
+
+    with pytest.raises(ValueError, match="description is required"):
+        parse_skill("---\nname: x\n---\nbody")
+    with pytest.raises(ValueError, match="header"):
+        parse_skill("no header here")
+    with pytest.raises(ValueError, match="Duplicate skill"):
+        SkillLibrary([parse_skill("---\nname: a\ndescription: d\n---\n")] * 2)
+
+    _write_skill(tmp_path / "s", "bad.md", "---\nname: bad\ndescription: d\ntools: [mongo_findd]\n---\n")
+    with pytest.raises(ValueError, match="unknown tools"):
+        build_agent({"_config_dir": str(tmp_path), "llm": {"base_url": "http://llm/v1", "model": "m"},
+                     "mongodb": {"uri": "mongodb://x", "database": "d"}, "skills_dir": "s"},
+                    mongo_client=mongomock.MongoClient())
+
+
+def test_no_skills_dir_means_no_load_skill_tool():
+    from agent.config import build_agent
+
+    agent = build_agent({"llm": {"base_url": "http://llm/v1", "model": "m"}})
+    assert "load_skill" not in agent.registry.tools and "Skills" not in agent.messages[0]["content"]
+
+
+def test_example_skills_folder_loads():
+    from agent.skills import load_skills
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    names = [s.name for s in load_skills(os.path.join(root, "skills"))]
+    assert "monthly_revenue" in names
