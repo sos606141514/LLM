@@ -281,3 +281,82 @@ def test_builtin_mongo_connection(monkeypatch):
     import pymongo
     c = pymongo.MongoClient(connect=False, **kw)  # raises if any option name/value is invalid
     c.close()
+
+
+# ---- several MongoDB sources ---------------------------------------------------
+def _two_source_cfg(tmp_path):
+    notes = tmp_path / "wms_notes.md"
+    notes.write_text("qty is in boxes, not pieces", encoding="utf-8")
+    return {
+        "_config_dir": str(tmp_path),
+        "llm": {"base_url": "http://llm/v1", "model": "m"},
+        "mongodb": [
+            {"name": "sales", "description": "orders and customers", "uri": "mongodb://s", "database": "shop",
+             "allowed_collections": ["orders"], "notes": "amount is in TWD; only count status=paid"},
+            {"name": "logistics", "description": "shipments and stock", "uri": "mongodb://l", "database": "wms",
+             "notes_file": "wms_notes.md", "max_limit": 1},
+        ],
+    }
+
+
+def _two_clients():
+    sales, wms = mongomock.MongoClient(), mongomock.MongoClient()
+    sales["shop"].orders.insert_many([{"amount": 100, "status": "paid"}, {"amount": 5, "status": "refund"}])
+    sales["shop"].secrets.insert_one({"k": "v"})
+    wms["wms"].stock.insert_many([{"sku": "X", "qty": 3}, {"sku": "Y", "qty": 7}])
+    return {"sales": sales, "logistics": wms}
+
+
+def test_multiple_sources_share_one_tool_set(tmp_path):
+    from agent.config import build_agent
+
+    agent = build_agent(_two_source_cfg(tmp_path), mongo_client=_two_clients())
+    reg = agent.registry
+    assert sorted(n for n in reg.tools if n.startswith("mongo_")) == [
+        "mongo_aggregate", "mongo_count", "mongo_find", "mongo_list_collections", "mongo_sample_schema",
+        "mongo_source_info"]
+    schema = reg.tools["mongo_find"].parameters
+    assert schema["properties"]["source"]["enum"] == ["sales", "logistics"]
+    assert "source" in schema["required"]
+
+    assert json.loads(reg.call("mongo_count", {"source": "sales", "collection": "orders",
+                                               "filter": {"status": "paid"}})) == {"count": 1}
+    assert len(json.loads(reg.call("mongo_find", {"source": "logistics", "collection": "stock"}))) == 1  # max_limit
+    assert json.loads(reg.call("mongo_list_collections", {"source": "logistics"})) == ["stock"]
+
+    # each source keeps its own allow-list; source is required and must exist
+    assert "not allowed" in reg.call("mongo_find", {"source": "sales", "collection": "secrets"})
+    assert "required" in reg.call("mongo_find", {"collection": "orders"})
+    assert "Unknown source" in reg.call("mongo_find", {"source": "hr", "collection": "orders"})
+
+    info = json.loads(reg.call("mongo_source_info", {"source": "logistics"}))
+    assert info["notes"] == "qty is in boxes, not pieces" and info["allowed_collections"] == "all"
+
+    # the system prompt lists sources by name + description only; notes are loaded on demand
+    prompt = agent.messages[0]["content"]
+    assert "- sales: orders and customers" in prompt and "mongo_source_info" in prompt
+    assert "TWD" not in prompt
+
+
+def test_single_mongodb_mapping_still_works():
+    from agent.config import build_agent
+
+    client = mongomock.MongoClient()
+    client["shop"].orders.insert_one({"x": 1})
+    agent = build_agent({"llm": {"base_url": "http://llm/v1", "model": "m"},
+                         "mongodb": {"uri": "mongodb://x", "database": "shop"}}, mongo_client=client)
+    reg = agent.registry
+    assert "source" not in reg.tools["mongo_find"].parameters["properties"]
+    assert "mongo_source_info" not in reg.tools
+    assert json.loads(reg.call("mongo_count", {"collection": "orders"})) == {"count": 1}
+
+
+def test_source_list_needs_unique_names():
+    from agent.config import mongo_source_configs
+    from agent.tools import MongoSource
+
+    with pytest.raises(ValueError, match="needs a 'name'"):
+        mongo_source_configs({"mongodb": [{"database": "d"}]})
+    db = mongomock.MongoClient()["d"]
+    with pytest.raises(ValueError, match="Duplicate"):
+        MongoTools(sources=[MongoSource(db, "a"), MongoSource(db, "a")])

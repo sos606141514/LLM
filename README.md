@@ -160,6 +160,35 @@ mongodb:
   database: mydb
 ```
 
+### 連多個 MongoDB（用途不同）
+
+把 `mongodb:` 改成清單，每個連線要有 `name`，並用 `description` 寫明用途：
+
+```yaml
+mongodb:
+  - name: sales
+    description: 銷售系統：訂單、客戶、付款
+    user: ${SALES_MONGO_USER}
+    password: ${SALES_MONGO_PW}
+    ip: 10.0.0.5
+    database: sales
+    allowed_collections: [orders, customers]
+    notes: |                          # 給模型看的欄位意義與業務規則（選用）
+      orders.amount 單位是新台幣元；營收只算 status = "paid"
+      created_at 是 UTC
+
+  - name: logistics
+    description: 物流系統：出貨、倉庫、庫存
+    uri: ${LOGISTICS_MONGO_URI}
+    database: wms
+    notes_file: notes/logistics.md    # 規則多時改放檔案（路徑相對於 config.yaml）
+```
+
+- 每個連線的連線方式（帳密 / `uri` / `factory`）、`allowed_collections`、`max_limit`、`max_time_ms` 都各自設定
+- 工具還是同一組（`mongo_find`、`mongo_count`…），只是多一個必填參數 `source`，值是連線的 `name`
+- system prompt 只列出各連線的 `name` 和 `description`；`notes` 不會塞進 prompt，模型要查某個連線前才用 `mongo_source_info` 讀取，所以規則再多 prompt 也不會變長
+- 只寫一個 `mongodb:`（不是清單）的舊設定照常可用，工具也不會多出 `source` 參數
+
 ## 內部 LLM API 的兩種模式（`llm.tool_mode`）
 
 | 模式 | 適用情況 | 作法 |
@@ -185,13 +214,14 @@ class MyLLM(LLMClient):
 
 | 工具 | 用途 |
 |---|---|
+| `mongo_source_info` | 某個連線的用途、可查的 collection、`notes`（有多個連線或有寫 description/notes 時才有） |
 | `mongo_list_collections` | 列出可查詢的 collection |
 | `mongo_sample_schema` | 欄位與型別 + 幾筆範例（讓模型先了解結構） |
 | `mongo_find` | filter / projection / sort / limit / skip |
 | `mongo_count` | 計數 |
 | `mongo_aggregate` | 統計、分組、join |
 
-日期、ObjectId 使用 Extended JSON：`{"created": {"$gte": {"$date": "2026-01-01T00:00:00Z"}}}`、`{"_id": {"$oid": "..."}}`。
+有多個連線時，每個工具都要帶 `source`。日期、ObjectId 使用 Extended JSON：`{"created": {"$gte": {"$date": "2026-01-01T00:00:00Z"}}}`、`{"_id": {"$oid": "..."}}`。
 
 ### 觸發 API
 

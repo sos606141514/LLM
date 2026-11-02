@@ -26,6 +26,26 @@ mongodb:
   allowed_collections: [orders, customers]   # remove to allow every collection
   max_limit: 50
   max_time_ms: 10000
+  # notes: |                       # field meanings / business rules, read by the model on demand
+  #   orders.amount is in TWD; revenue only counts status = "paid"
+  # notes_file: notes/mydb.md      # or keep them in a file (path relative to this config file)
+
+# Several databases with different purposes: make `mongodb` a list, give each a name and description.
+# mongodb:
+#   - name: sales
+#     description: Sales system - orders, customers, payments
+#     user: ${SALES_MONGO_USER}
+#     password: ${SALES_MONGO_PW}
+#     ip: ${SALES_MONGO_IP}
+#     database: sales
+#     allowed_collections: [orders, customers]
+#     notes: |
+#       orders.amount is in TWD; revenue only counts status = "paid"
+#   - name: logistics
+#     description: Logistics system - shipments, warehouses, stock
+#     uri: ${LOGISTICS_MONGO_URI}
+#     database: wms
+#     notes_file: notes/logistics.md
 
 # Each entry becomes one tool the model can call. `parameters` is a JSON Schema.
 # GET/DELETE send the arguments as query string, others as JSON body; {name} in the URL is a path parameter.
