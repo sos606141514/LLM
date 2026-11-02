@@ -33,7 +33,7 @@ cp config.example.yaml config.yaml      # 修改 MongoDB 資料庫、可查的 c
 export LLM_BASE_URL=http://llm.internal:8000/v1
 export LLM_MODEL=your-model
 export LLM_API_KEY=xxx                  # 不需要可不設
-export MONGO_URI="mongodb://readonly_user:pwd@mongo.internal:27017"
+export MONGO_USER=readonly_user MONGO_PW=xxx MONGO_IP=10.0.0.5
 export ORDER_API_TOKEN=... JOB_API_TOKEN=...
 
 python main.py                          # 互動模式
@@ -47,6 +47,36 @@ from agent.config import build_agent, load_config
 
 agent = build_agent(load_config("config.yaml"), confirm=lambda name, args: True)
 print(agent.run("幫我查訂單 A123 的狀態，如果還沒出貨就觸發報表任務"))
+```
+
+## MongoDB 連線
+
+### 用自己的連線套件（`Clinet_mongo(user, pw, ip, db)`）
+
+1. 把套件放到 `main.py` 旁邊（例如 `mongo_client.py`），或用 `pip install` 安裝
+2. 在 `config.yaml` 填：
+
+```yaml
+mongodb:
+  factory: mongo_client:Clinet_mongo   # 「模組名:函式名」
+  user: ${MONGO_USER}
+  password: ${MONGO_PW}
+  ip: ${MONGO_IP}
+  database: mydb
+  allowed_collections: [orders, customers]
+```
+
+程式會呼叫 `Clinet_mongo(user, password, ip, database)`，回傳值可以是：
+- pymongo 的 `Database`
+- pymongo 的 `MongoClient`（會自動取 `database`）
+- 自訂類別，把上面兩種之一存在 `.db`、`.database`、`.client`、`.conn` 或 `.connection` 屬性
+
+### 用連線字串
+
+```yaml
+mongodb:
+  uri: ${MONGO_URI}
+  database: mydb
 ```
 
 ## 內部 LLM API 的兩種模式（`llm.tool_mode`）

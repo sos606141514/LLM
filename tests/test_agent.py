@@ -176,3 +176,34 @@ def test_prompt_mode_roundtrip():
     assert "mongo_count" in sent[0]["content"] and sent[-1]["content"].startswith("TOOL_RESULT")
 
     assert _extract_json('{"final": "done"} trailing') == {"final": "done"}
+
+
+# ---- custom mongo connection helper --------------------------------------------
+def test_connect_mongo_with_custom_factory(monkeypatch):
+    import types
+
+    from agent.config import connect_mongo
+
+    seen = {}
+    client = mongomock.MongoClient()
+    client["mydb"].orders.insert_one({"x": 1})
+
+    class Wrapper:  # e.g. a class that keeps the MongoClient on .client
+        def __init__(self, user, pw, ip, db):
+            seen.update(user=user, pw=pw, ip=ip, db=db)
+            self.client = client
+
+    returns = {
+        "Database": lambda u, p, i, d: client[d],
+        "MongoClient": lambda u, p, i, d: client,
+        "Wrapper": Wrapper,
+    }
+    monkeypatch.setenv("MONGO_PW", "secret")
+    for name, fn in returns.items():
+        mod = types.ModuleType("fake_mongo_" + name)
+        mod.Clinet_mongo = fn
+        monkeypatch.setitem(sys.modules, mod.__name__, mod)
+        db = connect_mongo({"factory": f"{mod.__name__}:Clinet_mongo", "user": "u",
+                            "password": "${MONGO_PW}", "ip": "10.0.0.1", "database": "mydb"})
+        assert db.orders.count_documents({}) == 1, name
+    assert seen == {"user": "u", "pw": "secret", "ip": "10.0.0.1", "db": "mydb"}

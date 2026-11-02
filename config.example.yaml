@@ -11,8 +11,16 @@ llm:
   verify_ssl: true                 # or a path to your internal CA bundle
 
 mongodb:
-  uri: ${MONGO_URI}                # use a read-only user
+  # Option A: your own connection helper, called as Clinet_mongo(user, password, ip, database).
+  # "module:function" -> e.g. if it lives in mongo_client.py next to main.py: mongo_client:Clinet_mongo
+  factory: mongo_client:Clinet_mongo
+  user: ${MONGO_USER}              # use a read-only account
+  password: ${MONGO_PW}
+  ip: ${MONGO_IP}
   database: mydb
+  # Option B: remove the 5 lines above and use a connection string instead:
+  # uri: ${MONGO_URI}
+  # database: mydb
   allowed_collections: [orders, customers]   # remove to allow every collection
   max_limit: 50
   max_time_ms: 10000
