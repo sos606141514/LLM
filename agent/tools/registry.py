@@ -19,6 +19,8 @@ class Tool:
     parameters: Dict[str, Any]
     func: Callable[..., Any]
     require_confirmation: bool = False
+    # Optional check run before confirmation: return an error message to reject the call, or None.
+    validate: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None
 
     def to_openai_schema(self) -> Dict[str, Any]:
         return {
@@ -61,6 +63,11 @@ class ToolRegistry:
                 return _err(f"Arguments are not valid JSON: {e}")
         if not isinstance(arguments, dict):
             return _err("Arguments must be a JSON object")
+
+        if tool.validate is not None:
+            problem = tool.validate(arguments)
+            if problem:
+                return _err(problem)
 
         if tool.require_confirmation:
             handler = confirm or self.confirm

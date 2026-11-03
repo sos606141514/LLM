@@ -529,3 +529,73 @@ def test_prompt_tells_model_to_ask_when_collection_is_unclear():
     # no Mongo configured: no rule
     assert AMBIGUOUS_COLLECTION_RULE not in build_agent(
         {"llm": {"base_url": "http://llm/v1", "model": "m"}}).messages[0]["content"]
+
+
+# ---- one API per site (route_by / routes) ----------------------------------------
+def _site_api(monkeypatch, **extra):
+    monkeypatch.setenv("HSINCHU_TOKEN", "hc-secret")
+    monkeypatch.setenv("TAINAN_TOKEN", "tn-secret")
+    sess = FakeSession()
+    asked = []
+    r = ToolRegistry(confirm=lambda name, args: asked.append(dict(args)) or True)
+    register_api_tools(r, [{
+        "name": "regenerate_system_data",
+        "description": "Regenerate system data",
+        "method": "POST",
+        "headers": {"X-Source": "agent"},
+        "route_by": "site",
+        "routes": {
+            "TW01": {"label": "Hsinchu", "url": "https://hsinchu/api/regen",
+                     "headers": {"Authorization": "Bearer ${HSINCHU_TOKEN}"}},
+            "TW02": {"label": "Tainan", "url": "https://tainan/v2/regenerate",
+                     "headers": {"Authorization": "Bearer ${TAINAN_TOKEN}"}},
+        },
+        "parameters": {"type": "object", "properties": {
+            "lot_num": {"type": "string"}, "work_order": {"type": "string"}},
+            "required": ["lot_num", "work_order"]},
+        **extra,
+    }], session=sess)
+    return r, sess, asked
+
+
+def test_routes_pick_the_site_api(monkeypatch):
+    r, sess, asked = _site_api(monkeypatch)
+    tool = r.tools["regenerate_system_data"]
+    assert tool.require_confirmation
+    site = tool.parameters["properties"]["site"]
+    assert site["enum"] == ["TW01", "TW02"] and "TW02: Tainan" in site["description"]
+    assert "ask" in site["description"].lower()
+    assert tool.parameters["required"] == ["site", "lot_num", "work_order"]
+    assert list(tool.parameters["properties"])[0] == "site"
+
+    args = {"site": "tw02", "lot_num": "AB123456-0C-01", "work_order": "L2L16"}  # case-insensitive
+    out = json.loads(r.call("regenerate_system_data", args))
+    assert out["ok"]
+    method, url, kw = sess.calls[0]
+    assert (method, url) == ("POST", "https://tainan/v2/regenerate")
+    assert kw["headers"] == {"X-Source": "agent", "Authorization": "Bearer tn-secret"}
+    assert kw["json"] == {"lot_num": "AB123456-0C-01", "work_order": "L2L16"}  # site only picks the API
+    assert asked == [args]  # the confirmation shows the site
+
+
+def test_missing_or_unknown_site_is_rejected_before_confirmation(monkeypatch):
+    r, sess, asked = _site_api(monkeypatch)
+    missing = json.loads(r.call("regenerate_system_data", {"lot_num": "x", "work_order": "y"}))
+    assert "required" in missing["error"] and "TW01: Hsinchu" in missing["error"]
+    unknown = json.loads(r.call("regenerate_system_data", {"site": "CN01", "lot_num": "x", "work_order": "y"}))
+    assert "Unknown site" in unknown["error"]
+    assert sess.calls == [] and asked == []  # nothing sent, nobody asked to approve
+
+
+def test_route_options(monkeypatch):
+    r, sess, _ = _site_api(monkeypatch, send_route_param=True)
+    r.call("regenerate_system_data", {"site": "tw01", "lot_num": "x", "work_order": "y"})
+    assert sess.calls[0][1] == "https://hsinchu/api/regen"
+    assert sess.calls[0][2]["json"]["site"] == "TW01"  # sent with the configured spelling
+
+    with pytest.raises(ValueError, match="together"):
+        register_api_tools(ToolRegistry(), [{"name": "a", "route_by": "site"}])
+    with pytest.raises(ValueError, match="needs a url"):
+        register_api_tools(ToolRegistry(), [{"name": "a", "route_by": "site", "routes": {"X": {"label": "x"}}}])
+    with pytest.raises(ValueError, match="needs a url"):
+        register_api_tools(ToolRegistry(), [{"name": "a"}])
