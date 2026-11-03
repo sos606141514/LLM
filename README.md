@@ -173,7 +173,10 @@ mongodb:
     password: ${SALES_MONGO_PW}
     ip: 10.0.0.5
     database: sales
-    allowed_collections: [orders, customers]
+    collections:                      # 每個 collection 一句說明，模型靠它選要查哪個
+      orders: 訂單主檔，一筆一張訂單，含 order_no、金額、狀態、下單時間
+      order_items: 訂單明細，一筆一個商品，用 order_no 對應 orders
+      customers: 客戶基本資料
     notes: |                          # 給模型看的欄位意義與業務規則（選用）
       orders.amount 單位是新台幣元；營收只算 status = "paid"
       created_at 是 UTC
@@ -182,10 +185,25 @@ mongodb:
     description: 物流系統：出貨、倉庫、庫存
     uri: ${LOGISTICS_MONGO_URI}
     database: wms
+    collections:
+      shipments: 出貨紀錄，用 order_no 對應訂單
+      stock: 各倉庫的即時庫存
     notes_file: notes/logistics.md    # 規則多時改放檔案（路徑相對於 config.yaml）
 ```
 
-- 每個連線的連線方式（帳密 / `uri` / `factory`）、`allowed_collections`、`max_limit`、`max_time_ms` 都各自設定
+模型會先依連線的 `description` 選資料庫，再依 `collections` 的說明選 collection，例如問「訂單 A123 出貨了沒」
+會去查 `logistics` 的 `shipments`。
+
+問題沒講清楚是哪張表時（例如「取前 10 筆資料」），模型不會自己猜，而是先列出可查的 collection 和說明，
+問使用者要查哪一個；前面的對話已經講過是哪張表，就直接沿用。這條規則只要有設定 MongoDB 就會自動加進
+system prompt，自訂 `system_prompt` 時也會保留。`/chat` 要帶同一個 `session_id`，agent 才記得前文。
+
+- `collections` 同時是白名單：只有列出的 collection 能查，所以不要和 `allowed_collections` 一起寫
+- 說明寫「一筆代表什麼」和「用哪個欄位對應其他 collection」，模型選得最準
+- collection 總數不超過 `max_prompt_collections`（預設 30）時，說明直接列在 system prompt；超過時只列資料庫，
+  模型用 `mongo_source_info` 讀取該資料庫的 collection 說明，避免 prompt 太長
+
+- 每個連線的連線方式（帳密 / `uri` / `factory`）、`collections`（或 `allowed_collections`）、`max_limit`、`max_time_ms` 都各自設定
 - 工具還是同一組（`mongo_find`、`mongo_count`…），只是多一個必填參數 `source`，值是連線的 `name`
 - system prompt 只列出各連線的 `name` 和 `description`；`notes` 不會塞進 prompt，模型要查某個連線前才用 `mongo_source_info` 讀取，所以規則再多 prompt 也不會變長
 - 只寫一個 `mongodb:`（不是清單）的舊設定照常可用，工具也不會多出 `source` 參數
@@ -215,8 +233,8 @@ class MyLLM(LLMClient):
 
 | 工具 | 用途 |
 |---|---|
-| `mongo_source_info` | 某個連線的用途、可查的 collection、`notes`（有多個連線或有寫 description/notes 時才有） |
-| `mongo_list_collections` | 列出可查詢的 collection |
+| `mongo_source_info` | 某個連線的用途、各 collection 的說明、`notes`（有多個連線或有寫說明時才有） |
+| `mongo_list_collections` | 列出可查詢的 collection（有寫說明時一併附上） |
 | `mongo_sample_schema` | 欄位與型別 + 幾筆範例（讓模型先了解結構） |
 | `mongo_find` | filter / projection / sort / limit / skip |
 | `mongo_count` | 計數 |
@@ -278,7 +296,7 @@ agent.registry.register(Tool(
 ## 安全設計
 
 - **MongoDB 唯讀**：拒絕 `$out`、`$merge`、`$where`、`$function`、`$accumulator`；建議連線帳號也只給 read 權限
-- **Collection 白名單**：`allowed_collections`
+- **Collection 白名單**：`collections` 或 `allowed_collections`
 - **結果大小限制**：`max_limit`（筆數上限）、`max_time_ms`（查詢逾時）、`max_result_chars`（回傳給模型的字數上限）
 - **API 白名單**：模型只能呼叫設定檔列出的 endpoint，無法打任意 URL
 - **人工確認**：會改資料的 API 預設需確認

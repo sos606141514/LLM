@@ -34,17 +34,34 @@ def _dump(docs: Any) -> str:
     return json_util.dumps(docs, ensure_ascii=False, json_options=json_util.RELAXED_JSON_OPTIONS)
 
 
+# Always added to the system prompt when Mongo tools are available.
+AMBIGUOUS_COLLECTION_RULE = (
+    "If the question doesn't make clear which source or collection to use (e.g. \"show the first 10 "
+    "records\"), do not guess and do not query: ask the user which one they mean, listing the candidate "
+    "collections with their descriptions. If earlier messages already established the source and "
+    "collection, keep using them without asking again."
+)
+
+
 class MongoSource:
     """One MongoDB database the agent can query, with a name and a description of what it is for."""
 
     def __init__(self, db, name: str = "default", description: str = "", notes: str = "",
                  allowed_collections: Optional[Iterable[str]] = None, max_limit: int = 50,
-                 max_time_ms: int = 10000):
+                 max_time_ms: int = 10000, collections: Optional[Dict[str, str]] = None):
+        """`collections`: {collection name: what it holds}. Only the listed collections can be queried,
+        and the descriptions help the model pick the right one. Use it instead of `allowed_collections`."""
+        if collections and allowed_collections:
+            raise ValueError(f"Source '{name}': set either collections or allowed_collections, not both")
         self.db = db
         self.name = name
         self.description = description or ""
         self.notes = notes or ""
-        self.allowed = set(allowed_collections) if allowed_collections else None
+        self.collections: Dict[str, str] = {str(k): str(v or "").strip() for k, v in (collections or {}).items()}
+        if self.collections:
+            self.allowed: Optional[set] = set(self.collections)
+        else:
+            self.allowed = set(allowed_collections) if allowed_collections else None
         self.max_limit = max_limit
         self.max_time_ms = max_time_ms
 
@@ -53,6 +70,10 @@ class MongoSource:
             raise PermissionError(f"Collection '{name}' is not allowed in source '{self.name}'. "
                                   f"Allowed: {sorted(self.allowed)}")
         return self.db[name]
+
+    @property
+    def has_collection_descriptions(self) -> bool:
+        return any(self.collections.values())
 
     def limit(self, limit: Optional[int]) -> int:
         if not limit or limit <= 0:
@@ -70,7 +91,11 @@ class MongoTools:
     """
 
     def __init__(self, db=None, allowed_collections: Optional[Iterable[str]] = None, max_limit: int = 50,
-                 max_time_ms: int = 10000, sources: Optional[List[MongoSource]] = None):
+                 max_time_ms: int = 10000, sources: Optional[List[MongoSource]] = None,
+                 max_prompt_collections: int = 30):
+        # Collection descriptions go into the system prompt only while there are at most this many in total;
+        # beyond that the model gets them from mongo_source_info / mongo_list_collections.
+        self.max_prompt_collections = max_prompt_collections
         if sources is None:
             if db is None:
                 raise ValueError("MongoTools needs either db or sources")
@@ -100,18 +125,22 @@ class MongoTools:
     # ---- tool implementations -------------------------------------------------
     def source_info(self, source: Optional[str] = None) -> str:
         s = self._source(source)
-        return json.dumps({
-            "source": s.name,
-            "description": s.description,
-            "allowed_collections": sorted(s.allowed) if s.allowed is not None else "all",
-            "notes": s.notes,
-        }, ensure_ascii=False)
+        info: Dict[str, Any] = {"source": s.name, "description": s.description}
+        if s.collections:
+            info["collections"] = s.collections
+        else:
+            info["allowed_collections"] = sorted(s.allowed) if s.allowed is not None else "all"
+        info["notes"] = s.notes
+        return json.dumps(info, ensure_ascii=False)
 
     def list_collections(self, source: Optional[str] = None) -> str:
         s = self._source(source)
         names = s.db.list_collection_names()
         if s.allowed is not None:
             names = [n for n in names if n in s.allowed]
+        if s.has_collection_descriptions:
+            return json.dumps([{"name": n, "description": s.collections.get(n, "")} for n in sorted(names)],
+                              ensure_ascii=False)
         return json.dumps(sorted(names))
 
     def sample_schema(self, collection: str, sample_size: int = 3, source: Optional[str] = None) -> str:
@@ -163,13 +192,28 @@ class MongoTools:
 
     # ---- prompt / registration ------------------------------------------------
     def prompt_section(self) -> str:
-        """Short list of sources for the system prompt (details come from mongo_source_info)."""
-        if not self.multi and not any(s.description or s.notes for s in self.sources.values()):
-            return ""
-        lines = ["MongoDB sources (pass the name as `source`):" if self.multi else "MongoDB source:"]
-        for s in self.sources.values():
-            lines.append(f"- {s.name}: {s.description or '(no description)'}")
-        if any(s.notes for s in self.sources.values()):
+        """Sources (and, when there are few, their collections) for the system prompt.
+
+        Notes are never put here; the model reads them with mongo_source_info.
+        """
+        srcs = list(self.sources.values())
+        described = [s for s in srcs if s.has_collection_descriptions]
+        total = sum(len(s.collections) for s in described)
+        inline = bool(described) and total <= self.max_prompt_collections
+
+        lines: List[str] = []
+        if self.multi or any(s.description or s.notes or s.has_collection_descriptions for s in srcs):
+            lines.append("MongoDB sources (pass the name as `source`):" if self.multi else "MongoDB source:")
+            for s in srcs:
+                lines.append(f"- {s.name}: {s.description or '(no description)'}")
+                if inline and s.has_collection_descriptions:
+                    lines += [f"    - {c}: {d or '(no description)'}" for c, d in s.collections.items()]
+            lines.append("Pick the source and collection whose description matches the question.")
+        lines.append(AMBIGUOUS_COLLECTION_RULE)
+        if described and not inline:
+            lines.append("Collection descriptions are not listed here: call mongo_source_info for a source "
+                         "to see what each of its collections holds before choosing one.")
+        if any(s.notes for s in srcs):
             lines.append("Before querying a source for the first time, call mongo_source_info to read its "
                          "notes (field meanings and business rules).")
         return "\n".join(lines)
@@ -199,11 +243,13 @@ class MongoTools:
                 out["required"] = required
             return out
 
-        if self.multi or any(s.description or s.notes for s in self.sources.values()):
+        if self.multi or any(s.description or s.notes or s.has_collection_descriptions
+                             for s in self.sources.values()):
             registry.register(Tool(
                 name="mongo_source_info",
-                description="Show what a MongoDB source is for, which collections it allows, and its notes "
-                            "(field meanings, units, business rules). Read this before querying a source.",
+                description="Show what a MongoDB source is for, its collections (with what each one holds), "
+                            "and its notes (field meanings, units, business rules). Read this before querying "
+                            "a source.",
                 parameters=params({}, []),
                 func=self.source_info,
             ))
