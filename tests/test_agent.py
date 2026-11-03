@@ -428,3 +428,83 @@ def test_example_skills_folder_loads():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     names = [s.name for s in load_skills(os.path.join(root, "skills"))]
     assert "monthly_revenue" in names
+
+
+# ---- collection descriptions ---------------------------------------------------
+def _described_cfg(**extra):
+    return {
+        "llm": {"base_url": "http://llm/v1", "model": "m"},
+        "mongodb": [
+            {"name": "sales", "description": "orders and customers", "uri": "mongodb://s", "database": "shop",
+             "collections": {"orders": "one document per order: amount, status, created",
+                             "customers": "customer profiles"}},
+            {"name": "logistics", "description": "shipments and stock", "uri": "mongodb://l", "database": "wms",
+             "collections": {"shipments": "shipping records, linked to orders by order_no"}},
+        ],
+        **extra,
+    }
+
+
+def _described_clients():
+    sales, wms = mongomock.MongoClient(), mongomock.MongoClient()
+    sales["shop"].orders.insert_one({"order_no": "A1"})
+    sales["shop"].customers.insert_one({"name": "x"})
+    sales["shop"].secrets.insert_one({"k": "v"})
+    wms["wms"].shipments.insert_one({"order_no": "A1", "shipped": True})
+    return {"sales": sales, "logistics": wms}
+
+
+def test_collection_descriptions_guide_the_model(registry):
+    from agent.config import build_agent
+
+    agent = build_agent(_described_cfg(), mongo_client=_described_clients())
+    prompt = agent.messages[0]["content"]
+    assert "- logistics: shipments and stock" in prompt
+    assert "    - shipments: shipping records, linked to orders by order_no" in prompt
+    assert "    - customers: customer profiles" in prompt
+
+    reg = agent.registry
+    listed = json.loads(reg.call("mongo_list_collections", {"source": "sales"}))
+    assert listed == [{"name": "customers", "description": "customer profiles"},
+                      {"name": "orders", "description": "one document per order: amount, status, created"}]
+    info = json.loads(reg.call("mongo_source_info", {"source": "logistics"}))
+    assert info["collections"] == {"shipments": "shipping records, linked to orders by order_no"}
+
+    # only the described collections can be queried
+    assert "not allowed" in reg.call("mongo_find", {"source": "sales", "collection": "secrets"})
+    out = json.loads(reg.call("mongo_find", {"source": "logistics", "collection": "shipments",
+                                             "filter": {"order_no": "A1"}}))
+    assert out[0]["shipped"] is True
+
+
+def test_many_collections_are_left_out_of_the_prompt():
+    from agent.config import build_agent
+
+    agent = build_agent(_described_cfg(max_prompt_collections=2), mongo_client=_described_clients())
+    prompt = agent.messages[0]["content"]
+    assert "- sales: orders and customers" in prompt
+    assert "customer profiles" not in prompt and "call mongo_source_info" in prompt
+    info = json.loads(agent.registry.call("mongo_source_info", {"source": "sales"}))
+    assert info["collections"]["customers"] == "customer profiles"
+
+
+def test_collections_config_forms():
+    from agent.config import _collections_cfg
+    from agent.tools import MongoSource
+
+    assert _collections_cfg({"collections": ["a", "b"]}) == {"a": "", "b": ""}
+    assert _collections_cfg({"collections": {"a": "desc", "b": None}}) == {"a": "desc", "b": ""}
+    assert _collections_cfg({}) is None
+    db = mongomock.MongoClient()["d"]
+    with pytest.raises(ValueError, match="not both"):
+        MongoSource(db, "x", collections={"a": "d"}, allowed_collections=["a"])
+
+    # a single database with described collections also gets them in the prompt
+    tools = MongoTools(sources=[MongoSource(db, collections={"orders": "orders"})])
+    assert "    - orders: orders" in tools.prompt_section()
+    # plain names (no descriptions): list_collections keeps returning names
+    db.a.insert_one({})
+    plain = MongoTools(sources=[MongoSource(db, collections={"a": ""})])
+    reg = ToolRegistry()
+    plain.register(reg)
+    assert json.loads(reg.call("mongo_list_collections", {})) == ["a"]

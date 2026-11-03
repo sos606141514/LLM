@@ -24,6 +24,10 @@ mongodb:
   #   factory: mymongo:Mongo                    # your own connection class/function
   #   connect_method: connectmongo
   allowed_collections: [orders, customers]   # remove to allow every collection
+  # Or describe each collection so the model knows which one to query (only these can be queried):
+  # collections:
+  #   orders: One document per order - order_no, amount, status, created
+  #   customers: Customer profiles, linked to orders by customer_id
   max_limit: 50
   max_time_ms: 10000
   # notes: |                       # field meanings / business rules, read by the model on demand
@@ -38,13 +42,19 @@ mongodb:
 #     password: ${SALES_MONGO_PW}
 #     ip: ${SALES_MONGO_IP}
 #     database: sales
-#     allowed_collections: [orders, customers]
+#     collections:                 # what each collection holds; the model picks by these
+#       orders: One document per order - order_no, amount, status, created
+#       order_items: One document per item in an order, linked by order_no
+#       customers: Customer profiles
 #     notes: |
 #       orders.amount is in TWD; revenue only counts status = "paid"
 #   - name: logistics
 #     description: Logistics system - shipments, warehouses, stock
 #     uri: ${LOGISTICS_MONGO_URI}
 #     database: wms
+#     collections:
+#       shipments: Shipping records, linked to orders by order_no
+#       stock: Current stock per warehouse and SKU
 #     notes_file: notes/logistics.md
 
 # Each entry becomes one tool the model can call. `parameters` is a JSON Schema.
@@ -80,6 +90,10 @@ apis:
 # Skills: Markdown files with step-by-step procedures (report formulas, API workflows...).
 # Only their names and descriptions go into the system prompt; the model calls load_skill when needed.
 # skills_dir: skills               # path relative to this config file
+
+# Collection descriptions are listed in the system prompt while there are at most this many in total;
+# with more, the model reads them with mongo_source_info instead.
+# max_prompt_collections: 30
 
 max_steps: 8
 max_result_chars: 8000

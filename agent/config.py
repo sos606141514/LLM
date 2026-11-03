@@ -216,10 +216,25 @@ def build_mongo_tools(cfg: Dict[str, Any], mongo_client=None) -> Optional[MongoT
             description=_env(src_cfg.get("description") or ""),
             notes=_source_notes(cfg, src_cfg),
             allowed_collections=src_cfg.get("allowed_collections"),
+            collections=_collections_cfg(src_cfg),
             max_limit=src_cfg.get("max_limit", 50),
             max_time_ms=src_cfg.get("max_time_ms", 10000),
         ))
-    return MongoTools(sources=sources) if sources else None
+    if not sources:
+        return None
+    return MongoTools(sources=sources, max_prompt_collections=cfg.get("max_prompt_collections", 30))
+
+
+def _collections_cfg(src_cfg: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """`collections:` is {name: description}; a plain list of names is accepted too."""
+    value = src_cfg.get("collections")
+    if not value:
+        return None
+    if isinstance(value, list):
+        return {str(name): "" for name in value}
+    if not isinstance(value, dict):
+        raise ValueError(f"mongodb '{src_cfg.get('name')}': collections must be a mapping of name: description")
+    return {str(k): _env(v) if v else "" for k, v in value.items()}
 
 
 def new_session(template: Agent) -> Agent:
