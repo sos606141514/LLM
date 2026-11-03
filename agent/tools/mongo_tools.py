@@ -34,6 +34,15 @@ def _dump(docs: Any) -> str:
     return json_util.dumps(docs, ensure_ascii=False, json_options=json_util.RELAXED_JSON_OPTIONS)
 
 
+# Always added to the system prompt when Mongo tools are available.
+AMBIGUOUS_COLLECTION_RULE = (
+    "If the question doesn't make clear which source or collection to use (e.g. \"show the first 10 "
+    "records\"), do not guess and do not query: ask the user which one they mean, listing the candidate "
+    "collections with their descriptions. If earlier messages already established the source and "
+    "collection, keep using them without asking again."
+)
+
+
 class MongoSource:
     """One MongoDB database the agent can query, with a name and a description of what it is for."""
 
@@ -189,17 +198,18 @@ class MongoTools:
         """
         srcs = list(self.sources.values())
         described = [s for s in srcs if s.has_collection_descriptions]
-        if not self.multi and not any(s.description or s.notes or s.has_collection_descriptions for s in srcs):
-            return ""
         total = sum(len(s.collections) for s in described)
         inline = bool(described) and total <= self.max_prompt_collections
 
-        lines = ["MongoDB sources (pass the name as `source`):" if self.multi else "MongoDB source:"]
-        for s in srcs:
-            lines.append(f"- {s.name}: {s.description or '(no description)'}")
-            if inline and s.has_collection_descriptions:
-                lines += [f"    - {c}: {d or '(no description)'}" for c, d in s.collections.items()]
-        lines.append("Pick the source and collection whose description matches the question.")
+        lines: List[str] = []
+        if self.multi or any(s.description or s.notes or s.has_collection_descriptions for s in srcs):
+            lines.append("MongoDB sources (pass the name as `source`):" if self.multi else "MongoDB source:")
+            for s in srcs:
+                lines.append(f"- {s.name}: {s.description or '(no description)'}")
+                if inline and s.has_collection_descriptions:
+                    lines += [f"    - {c}: {d or '(no description)'}" for c, d in s.collections.items()]
+            lines.append("Pick the source and collection whose description matches the question.")
+        lines.append(AMBIGUOUS_COLLECTION_RULE)
         if described and not inline:
             lines.append("Collection descriptions are not listed here: call mongo_source_info for a source "
                          "to see what each of its collections holds before choosing one.")

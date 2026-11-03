@@ -194,6 +194,10 @@ mongodb:
 模型會先依連線的 `description` 選資料庫，再依 `collections` 的說明選 collection，例如問「訂單 A123 出貨了沒」
 會去查 `logistics` 的 `shipments`。
 
+問題沒講清楚是哪張表時（例如「取前 10 筆資料」），模型不會自己猜，而是先列出可查的 collection 和說明，
+問使用者要查哪一個；前面的對話已經講過是哪張表，就直接沿用。這條規則只要有設定 MongoDB 就會自動加進
+system prompt，自訂 `system_prompt` 時也會保留。`/chat` 要帶同一個 `session_id`，agent 才記得前文。
+
 - `collections` 同時是白名單：只有列出的 collection 能查，所以不要和 `allowed_collections` 一起寫
 - 說明寫「一筆代表什麼」和「用哪個欄位對應其他 collection」，模型選得最準
 - collection 總數不超過 `max_prompt_collections`（預設 30）時，說明直接列在 system prompt；超過時只列資料庫，

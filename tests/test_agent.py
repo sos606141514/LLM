@@ -508,3 +508,24 @@ def test_collections_config_forms():
     reg = ToolRegistry()
     plain.register(reg)
     assert json.loads(reg.call("mongo_list_collections", {})) == ["a"]
+
+
+def test_prompt_tells_model_to_ask_when_collection_is_unclear():
+    from agent.config import build_agent
+    from agent.tools.mongo_tools import AMBIGUOUS_COLLECTION_RULE
+
+    described = build_agent(_described_cfg(), mongo_client=_described_clients()).messages[0]["content"]
+    assert AMBIGUOUS_COLLECTION_RULE in described
+    assert described.index("customer profiles") < described.index(AMBIGUOUS_COLLECTION_RULE)
+
+    # also for a single database without any descriptions, and with a custom system_prompt
+    client = mongomock.MongoClient()
+    plain = build_agent({"llm": {"base_url": "http://llm/v1", "model": "m"}, "system_prompt": "Be brief.",
+                         "mongodb": {"uri": "mongodb://x", "database": "shop"}}, mongo_client=client)
+    prompt = plain.messages[0]["content"]
+    assert prompt.startswith("Be brief.") and AMBIGUOUS_COLLECTION_RULE in prompt
+    assert "MongoDB source" not in prompt
+
+    # no Mongo configured: no rule
+    assert AMBIGUOUS_COLLECTION_RULE not in build_agent(
+        {"llm": {"base_url": "http://llm/v1", "model": "m"}}).messages[0]["content"]
