@@ -252,6 +252,49 @@ class MyLLM(LLMClient):
 - `${VAR}` 從環境變數讀取，token 不必寫在設定檔
 - 非 GET 預設 `require_confirmation: true`，執行前會呼叫 `confirm(name, args)`；CLI 會問 y/N
 
+### 每個場域（或環境）各有一個 API：`route_by` + `routes`
+
+同一個功能在不同場域打不同的 API 時，寫成一個工具就好。模型只看到一個工具和一個必填的 `site` 參數，
+程式依 `site` 選擇對應的網址和 token：
+
+```yaml
+apis:
+  - name: regenerate_system_data
+    description: >-
+      重新產出指定場域的系統資料（會覆蓋原本的資料）。使用者明確要求重出時才使用。
+    method: POST
+    route_by: site                       # 依這個參數選 API（參數名稱可自訂）
+    routes:
+      TW01:
+        label: 新竹廠
+        url: https://hsinchu-mes.internal/api/regen
+        headers: {Authorization: Bearer ${HSINCHU_API_TOKEN}}
+      TW02:
+        label: 台南廠
+        url: https://tn-erp.internal/v2/regenerate
+        headers: {Authorization: Bearer ${TAINAN_API_TOKEN}}
+    parameters:
+      type: object
+      properties:
+        lot_num:
+          type: string
+          pattern: "^[A-Za-z0-9]{8}-[A-Za-z0-9]{2}-[A-Za-z0-9]{2}$"
+          description: 批號（Lotnum），格式 8碼-2碼-2碼，例如 AB123456-0C-01
+        work_order:
+          type: string
+          pattern: "^L[0-9]+L[0-9]+$"
+          description: L 編號，格式 L數字L數字，例如 L2L16
+      required: [lot_num, work_order]
+```
+
+- 程式自動加上必填的 `site` 參數，選項是 `routes` 的代碼，說明附上 `label`，並要求模型「使用者沒說場域就先問，不要猜」
+- `site` 沒填或不在 `routes` 裡：**程式直接拒絕，不會送出，也不會跳出確認**，模型會收到可選場域清單再去問使用者
+- 大小寫不同（例如 `tw02`）會自動對應到 `TW02`
+- 確認畫面會顯示 `site`，按 y 前可以再檢查一次
+- `site` 只用來選 API，不會放進送出的 body；API 也需要它的話加 `send_route_param: true`
+- 每個 route 可以各自覆寫 `url`、`headers`（會和最上層的 `headers` 合併）、`method`、`timeout`
+- 新增場域只要在 `routes` 加一筆
+
 也可以直接用程式註冊自訂工具：
 
 ```python
