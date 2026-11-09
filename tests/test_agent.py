@@ -711,3 +711,95 @@ def test_api_tool_is_generic_and_steps_are_opt_in():
     r.register(both.to_tool())
     r.call("both", {"site": "a", "x": "1"})
     assert sess.calls[0][1] == "https://a" and sess.calls[0][2]["json"] == {"key": "A-1"}
+
+
+# ---- fill a field from the conversation (email the agent's answer) -----------------
+EMAIL = r"^[A-Za-z0-9._%+-]+@company\.com$"
+
+
+def _mail_agent(responses):
+    sess = FakeSession()
+    shown = []
+    reg = ToolRegistry(confirm=lambda name, args: shown.append(dict(args)) or True)
+    register_api_tools(reg, [{
+        "name": "send_email",
+        "method": "POST",
+        "url": "https://mail/send",
+        "parameters": {"type": "object", "properties": {
+            "to": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": EMAIL}},
+            "cc": {"type": "array", "items": {"type": "string", "pattern": EMAIL}},
+            "subject": {"type": "string", "minLength": 1, "maxLength": 100},
+            "content": {"type": "string"}},
+            "required": ["to", "subject", "content"]},
+        "fill": {"content": {"from": "answer", "format": "html"}},
+    }], session=sess)
+    llm = ScriptedLLM(responses)
+    return Agent(llm, reg), sess, shown
+
+
+def test_email_sends_the_chosen_answer_as_html():
+    answer = "上個月共 **152** 筆\n\n| 月份 | 金額 |\n|---|---|\n| 10 | 1,234,500 |\n\n<script>x</script>"
+    agent, sess, shown = _mail_agent([
+        LLMResponse(answer),
+        LLMResponse("請問要寄給誰？"),
+        LLMResponse(None, [ToolCall("c1", "send_email",
+                                    '{"to": ["amy@company.com"], "cc": ["bob@company.com"], '
+                                    '"subject": "10 月營收", "which_answer": 2}')]),
+        LLMResponse("已寄出"),
+    ])
+    agent.run("上個月營收？")
+    agent.run("寄出去")
+    assert agent.run("amy@company.com，cc bob") == "已寄出"
+
+    # the model doesn't write the content; it picks the answer
+    schema = agent.registry.tools["send_email"].parameters
+    assert "content" not in schema["properties"] and "content" not in schema["required"]
+    assert "which_answer" in schema["properties"]
+
+    # the confirmation shows the exact text that will be sent
+    assert shown == [{"to": ["amy@company.com"], "cc": ["bob@company.com"], "subject": "10 月營收",
+                      "which_answer": 2, "content": answer}]
+    body = sess.calls[0][2]["json"]
+    assert set(body) == {"to", "cc", "subject", "content"}  # which_answer is not sent
+    assert body["subject"] == "10 月營收"
+    assert schema["required"] == ["to", "subject"]
+    html_out = body["content"]
+    assert "<strong>152</strong>" in html_out and '<table style="border-collapse:collapse">' in html_out
+    assert "<td" in html_out and "1,234,500" in html_out
+    assert "<script>" not in html_out and "&lt;script&gt;" in html_out  # HTML in the answer is not rendered
+
+
+def test_email_rejected_without_an_answer_or_with_bad_recipients():
+    agent, sess, shown = _mail_agent([])
+    reg = agent.registry
+    from agent.tools import context as tool_context
+
+    err = json.loads(reg.call("send_email", {"to": ["amy@company.com"], "subject": "s"}))["error"]
+    assert "no earlier answer" in err
+    with tool_context.use(tool_context.CallContext(answers=["only one"])):
+        assert "between 1 and 1" in json.loads(reg.call("send_email", {"to": ["amy@company.com"], "subject": "s",
+                                                                         "which_answer": 3}))["error"]
+        bad = json.loads(reg.call("send_email", {"to": ["amy@gmail.com"], "subject": "s"}))["error"]
+        assert "to[0]" in bad and "does not match" in bad
+        no_subject = json.loads(reg.call("send_email", {"to": ["amy@company.com"]}))["error"]
+        assert "subject is required" in no_subject
+        # a content the model writes itself is replaced by the answer
+        reg.call("send_email", {"to": ["amy@company.com"], "subject": "s", "content": "made up"})
+    assert sess.calls[0][2]["json"]["content"] == "<p>only one</p>"
+    assert len(shown) == 1
+
+
+def test_fill_config_errors_and_text_format():
+    with pytest.raises(ValueError, match="from must be"):
+        register_api_tools(ToolRegistry(), [{"name": "a", "url": "https://x", "fill": {"c": "nope"}}])
+    with pytest.raises(ValueError, match="format must be"):
+        register_api_tools(ToolRegistry(), [{"name": "a", "url": "https://x",
+                                             "fill": {"c": {"from": "answer", "format": "pdf"}}}])
+    from agent.tools import context as tool_context
+
+    sess = FakeSession()
+    r = ToolRegistry(confirm=lambda n, a: True)
+    register_api_tools(r, [{"name": "a", "url": "https://x", "fill": {"c": "answer"}}], session=sess)
+    with tool_context.use(tool_context.CallContext(answers=["**raw**"])):
+        r.call("a", {})
+    assert sess.calls[0][2]["json"] == {"c": "**raw**"}
