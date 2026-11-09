@@ -120,8 +120,10 @@ apis:
 #    parameters:
 #      type: object
 #      properties:
-#        to: {type: array, minItems: 1, items: {type: string, pattern: "^[A-Za-z0-9._%+-]+@company\\.com$"}}
-#        cc: {type: array, items: {type: string, pattern: "^[A-Za-z0-9._%+-]+@company\\.com$"}}
+#        to: {type: array, minItems: 1, items: {type: string, pattern: "^[a-z0-9._%+-]+@company\\.com$"},
+#             description: "Recipients, company addresses only (@company.com), lowercase"}
+#        cc: {type: array, items: {type: string, pattern: "^[a-z0-9._%+-]+@company\\.com$"},
+#             description: "CC, company addresses only (@company.com), lowercase; leave out if none"}
 #      required: [to]
 #    fill:
 #      content: {from: answer, format: html}    # html = Markdown converted to HTML; text = as is

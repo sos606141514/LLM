@@ -342,10 +342,12 @@ API 只收一個合併的值（例如 `AB123456-0C-01_L2L16`），但希望模�
         to:
           type: array
           minItems: 1
-          items: {type: string, pattern: "^[A-Za-z0-9._%+-]+@company\\.com$"}   # 只允許公司信箱
+          items: {type: string, pattern: "^[a-z0-9._%+-]+@company\\.com$"}   # 只允許公司信箱
+          description: 收件者，只能是公司信箱 @company.com，一律用小寫
         cc:
           type: array
-          items: {type: string, pattern: "^[A-Za-z0-9._%+-]+@company\\.com$"}
+          items: {type: string, pattern: "^[a-z0-9._%+-]+@company\\.com$"}
+          description: 副本，只能是公司信箱 @company.com，一律用小寫；沒有就不用填
       required: [to]
     fill:
       content:
