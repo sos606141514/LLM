@@ -348,14 +348,19 @@ API 只收一個合併的值（例如 `AB123456-0C-01_L2L16`），但希望模�
           type: array
           items: {type: string, pattern: "^[a-z0-9._%+-]+@company\\.com$"}
           description: 副本，只能是公司信箱 @company.com，一律用小寫；沒有就不用填
-      required: [to]
+        subject:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: 信件主旨，依內容寫一句簡短的標題，例如「2026 年 10 月已付款訂單統計」
+      required: [to, subject]
     fill:
       content:
         from: answer        # agent 先前的回答
         format: html        # html：Markdown 轉成 HTML；text：原文
 ```
 
-- 模型只填 `to`、`cc`，以及 `which_answer`（1 = 最近一則回答、2 = 再前一則…），`which_answer` 不會送出
+- 模型只填 `to`、`cc`、`subject`，以及 `which_answer`（1 = 最近一則回答、2 = 再前一則…），`which_answer` 不會送出
 - 模型問過「要寄給誰？」的話，那句也算一則回答，模型會改用 `which_answer: 2`
 - **確認畫面會顯示即將寄出的完整內容**，選錯回答可以在按 y 前發現
 - `format: html`：表格、粗體、清單轉成 HTML，表格加上框線；回答裡的 HTML 標籤會被轉成文字，不會被執行

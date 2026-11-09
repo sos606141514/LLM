@@ -728,8 +728,9 @@ def _mail_agent(responses):
         "parameters": {"type": "object", "properties": {
             "to": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": EMAIL}},
             "cc": {"type": "array", "items": {"type": "string", "pattern": EMAIL}},
+            "subject": {"type": "string", "minLength": 1, "maxLength": 100},
             "content": {"type": "string"}},
-            "required": ["to", "content"]},
+            "required": ["to", "subject", "content"]},
         "fill": {"content": {"from": "answer", "format": "html"}},
     }], session=sess)
     llm = ScriptedLLM(responses)
@@ -742,7 +743,8 @@ def test_email_sends_the_chosen_answer_as_html():
         LLMResponse(answer),
         LLMResponse("請問要寄給誰？"),
         LLMResponse(None, [ToolCall("c1", "send_email",
-                                    '{"to": ["amy@company.com"], "cc": ["bob@company.com"], "which_answer": 2}')]),
+                                    '{"to": ["amy@company.com"], "cc": ["bob@company.com"], '
+                                    '"subject": "10 月營收", "which_answer": 2}')]),
         LLMResponse("已寄出"),
     ])
     agent.run("上個月營收？")
@@ -755,9 +757,12 @@ def test_email_sends_the_chosen_answer_as_html():
     assert "which_answer" in schema["properties"]
 
     # the confirmation shows the exact text that will be sent
-    assert shown == [{"to": ["amy@company.com"], "cc": ["bob@company.com"], "which_answer": 2, "content": answer}]
+    assert shown == [{"to": ["amy@company.com"], "cc": ["bob@company.com"], "subject": "10 月營收",
+                      "which_answer": 2, "content": answer}]
     body = sess.calls[0][2]["json"]
-    assert set(body) == {"to", "cc", "content"}  # which_answer is not sent
+    assert set(body) == {"to", "cc", "subject", "content"}  # which_answer is not sent
+    assert body["subject"] == "10 月營收"
+    assert schema["required"] == ["to", "subject"]
     html_out = body["content"]
     assert "<strong>152</strong>" in html_out and '<table style="border-collapse:collapse">' in html_out
     assert "<td" in html_out and "1,234,500" in html_out
@@ -769,15 +774,17 @@ def test_email_rejected_without_an_answer_or_with_bad_recipients():
     reg = agent.registry
     from agent.tools import context as tool_context
 
-    err = json.loads(reg.call("send_email", {"to": ["amy@company.com"]}))["error"]
+    err = json.loads(reg.call("send_email", {"to": ["amy@company.com"], "subject": "s"}))["error"]
     assert "no earlier answer" in err
     with tool_context.use(tool_context.CallContext(answers=["only one"])):
-        assert "between 1 and 1" in json.loads(reg.call("send_email", {"to": ["amy@company.com"],
+        assert "between 1 and 1" in json.loads(reg.call("send_email", {"to": ["amy@company.com"], "subject": "s",
                                                                          "which_answer": 3}))["error"]
-        bad = json.loads(reg.call("send_email", {"to": ["amy@gmail.com"]}))["error"]
+        bad = json.loads(reg.call("send_email", {"to": ["amy@gmail.com"], "subject": "s"}))["error"]
         assert "to[0]" in bad and "does not match" in bad
+        no_subject = json.loads(reg.call("send_email", {"to": ["amy@company.com"]}))["error"]
+        assert "subject is required" in no_subject
         # a content the model writes itself is replaced by the answer
-        reg.call("send_email", {"to": ["amy@company.com"], "content": "made up"})
+        reg.call("send_email", {"to": ["amy@company.com"], "subject": "s", "content": "made up"})
     assert sess.calls[0][2]["json"]["content"] == "<p>only one</p>"
     assert len(shown) == 1
 

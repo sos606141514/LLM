@@ -124,7 +124,9 @@ apis:
 #             description: "Recipients, company addresses only (@company.com), lowercase"}
 #        cc: {type: array, items: {type: string, pattern: "^[a-z0-9._%+-]+@company\\.com$"},
 #             description: "CC, company addresses only (@company.com), lowercase; leave out if none"}
-#      required: [to]
+#        subject: {type: string, minLength: 1, maxLength: 100,
+#                  description: "A short subject line summarising the content"}
+#      required: [to, subject]
 #    fill:
 #      content: {from: answer, format: html}    # html = Markdown converted to HTML; text = as is
 
