@@ -15,9 +15,12 @@ Agent loop (agent/agent.py)
 LLMClient (agent/llm_client.py) ──► 內部 LLM API  /chat/completions
    │  回傳 tool_calls
    ▼
-ToolRegistry (agent/tools/registry.py) ── 驗證參數 / 需確認的工具先詢問使用者
+ToolRegistry (agent/tools/registry.py)
+   │  1. 檢查參數 (validation.py)：依 parameters 檢查格式，不符合就退回給模型
+   │  2. 需確認的工具先詢問使用者
    ├── MongoTools  (mongo_tools.py)  唯讀：list / schema / find / count / aggregate
-   └── ApiEndpoint (api_tools.py)    設定檔中每個 API 各自成為一個工具
+   └── ApiEndpoint (api_tools.py)    通用 API 工具：設定檔中每個 API 各自成為一個工具
+         └── 選配步驟 (api_hooks.py)  config 有寫才套用：routes（依場域選 API）、combine（合併參數）
    │  工具結果（JSON 字串）
    ▼
 回到 LLM，直到模型給出最終回答或達到 max_steps
@@ -294,6 +297,62 @@ apis:
 - `site` 只用來選 API，不會放進送出的 body；API 也需要它的話加 `send_route_param: true`
 - 每個 route 可以各自覆寫 `url`、`headers`（會和最上層的 `headers` 合併）、`method`、`timeout`
 - 新增場域只要在 `routes` 加一筆
+
+### 把幾個參數合併成一個送出：`combine`
+
+API 只收一個合併的值（例如 `AB123456-0C-01_L2L16`），但希望模型分別辨識兩個編號時，讓模型填兩個參數，
+由程式合併：
+
+```yaml
+    parameters:
+      type: object
+      properties:
+        lot_num:
+          type: string
+          pattern: "^[A-Za-z0-9]{8}-[A-Za-z0-9]{2}-[A-Za-z0-9]{2}$"
+          description: 批號，格式 8碼-2碼-2碼（英文或數字），例如 AB123456-0C-01
+        work_order:
+          type: string
+          pattern: "^L[0-9]+L[0-9]+$"
+          description: L 編號，格式 L數字L數字，例如 L2L16
+      required: [lot_num, work_order]
+    combine:
+      lot_key: "{lot_num}_{work_order}"   # 送出 {"lot_key": "AB123456-0C-01_L2L16"}
+```
+
+- 模型看到的是 `lot_num`、`work_order` 兩個參數，各自依格式辨識；確認畫面也分開顯示
+- 兩個都通過格式檢查後，程式依範本合併；`lot_num`、`work_order` 本身不會送出
+- 範本裡的 `{名稱}` 必須是 `parameters` 裡的參數（或 `route_by`），寫錯啟動時就會報錯
+
+### 程式分工
+
+| 檔案 | 負責 |
+|---|---|
+| `agent/tools/api_tools.py` | 通用 API 工具：組網址、帶 header、送出、回傳結果。不含任何特定 API 的邏輯 |
+| `agent/tools/api_hooks.py` | 選配步驟：`routes`、`combine`。只有 config 寫了對應設定的 API 才會套用 |
+| `agent/tools/validation.py` | 參數檢查：所有工具（API、MongoDB、skill）共用 |
+
+要支援新的客製需求時，在 `api_hooks.py` 新增一個 `Step`，不用改 `api_tools.py`。
+
+## 參數格式檢查
+
+呼叫任何工具前，程式會依 `parameters` 檢查參數，**不符合就不送出、也不跳確認**，並把錯誤和參數說明回給模型，
+讓它修正或去問使用者。規則就寫在 `parameters` 裡，模型看到的格式和被檢查的格式是同一份。
+
+| 關鍵字 | 例子 |
+|---|---|
+| `required` | 必填參數沒給 |
+| `type` | `string`、`integer`、`number`、`boolean`、`object`、`array`（`"5"` 不會被當成數字） |
+| `enum` | 只能是清單裡的值 |
+| `pattern` | 正規表示式，例如 `^L[0-9]+L[0-9]+$` |
+| `minLength` / `maxLength` | 字串長度 |
+| `minimum` / `maximum` | 數字範圍 |
+| `minItems` / `maxItems`、`items` | 清單長度、清單裡每一項的格式 |
+
+- 物件裡的欄位（`properties`）也會逐層檢查；沒有列在 `parameters` 的參數不會被拒絕
+- 沒寫 `parameters` 的 API 不做任何檢查
+- **規則要和 API 實際接受的一致**：例如 `enum` 漏了 API 其實接受的值，那個值就會被擋下
+- 用程式註冊的工具若不想檢查，設 `Tool(..., check_schema=False)`
 
 也可以直接用程式註冊自訂工具：
 

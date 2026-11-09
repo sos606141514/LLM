@@ -6,6 +6,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from .validation import check_call
+
 logger = logging.getLogger(__name__)
 
 # Called before a tool that needs confirmation runs. Return True to allow it.
@@ -19,8 +21,12 @@ class Tool:
     parameters: Dict[str, Any]
     func: Callable[..., Any]
     require_confirmation: bool = False
-    # Optional check run before confirmation: return an error message to reject the call, or None.
+    # Optional clean-up of the arguments before they are checked (e.g. "tw02" -> "TW02").
+    prepare: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
+    # Optional extra check run before confirmation: return an error message to reject the call, or None.
     validate: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None
+    # Check the arguments against `parameters` (type, required, enum, pattern...); see validation.py.
+    check_schema: bool = True
 
     def to_openai_schema(self) -> Dict[str, Any]:
         return {
@@ -64,10 +70,10 @@ class ToolRegistry:
         if not isinstance(arguments, dict):
             return _err("Arguments must be a JSON object")
 
-        if tool.validate is not None:
-            problem = tool.validate(arguments)
-            if problem:
-                return _err(problem)
+        # Checked before confirmation: a rejected call is never sent and nobody is asked to approve it.
+        arguments, problem = check_call(tool, arguments)
+        if problem:
+            return _err(problem)
 
         if tool.require_confirmation:
             handler = confirm or self.confirm
