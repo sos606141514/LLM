@@ -327,7 +327,7 @@ def test_multiple_sources_share_one_tool_set(tmp_path):
     # each source keeps its own allow-list; source is required and must exist
     assert "not allowed" in reg.call("mongo_find", {"source": "sales", "collection": "secrets"})
     assert "required" in reg.call("mongo_find", {"collection": "orders"})
-    assert "Unknown source" in reg.call("mongo_find", {"source": "hr", "collection": "orders"})
+    assert "is not one of ['sales', 'logistics']" in reg.call("mongo_find", {"source": "hr", "collection": "orders"})
 
     info = json.loads(reg.call("mongo_source_info", {"source": "logistics"}))
     assert info["notes"] == "qty is in boxes, not pieces" and info["allowed_collections"] == "all"
@@ -394,7 +394,9 @@ def test_skills_are_listed_in_prompt_and_loaded_on_demand(tmp_path):
     loaded = json.loads(llm.seen[1][-1]["content"])
     assert loaded["tools"] == ["mongo_aggregate"]
     assert loaded["instructions"] == "Step 1: only status=paid\n---\nStep 2"  # '---' in the body is kept
-    assert "Unknown skill" in agent.registry.call("load_skill", {"name": "nope"})
+    assert "is not one of" in agent.registry.call("load_skill", {"name": "nope"})  # rejected by the schema check
+    with pytest.raises(ValueError, match="Unknown skill"):
+        agent.skills.load("nope")
 
 
 def test_skill_errors_are_reported_at_startup(tmp_path):
@@ -575,7 +577,7 @@ def test_routes_pick_the_site_api(monkeypatch):
     assert (method, url) == ("POST", "https://tainan/v2/regenerate")
     assert kw["headers"] == {"X-Source": "agent", "Authorization": "Bearer tn-secret"}
     assert kw["json"] == {"lot_num": "AB123456-0C-01", "work_order": "L2L16"}  # site only picks the API
-    assert asked == [args]  # the confirmation shows the site
+    assert asked == [{**args, "site": "TW02"}]  # the confirmation shows the site, with its configured spelling
 
 
 def test_missing_or_unknown_site_is_rejected_before_confirmation(monkeypatch):
@@ -599,3 +601,113 @@ def test_route_options(monkeypatch):
         register_api_tools(ToolRegistry(), [{"name": "a", "route_by": "site", "routes": {"X": {"label": "x"}}}])
     with pytest.raises(ValueError, match="needs a url"):
         register_api_tools(ToolRegistry(), [{"name": "a"}])
+
+
+# ---- argument format checks + combine ---------------------------------------------
+LOT = "^[A-Za-z0-9]{8}-[A-Za-z0-9]{2}-[A-Za-z0-9]{2}$"
+LNUM = "^L[0-9]+L[0-9]+$"
+
+
+def _combined_api(monkeypatch):
+    sess = FakeSession()
+    asked = []
+    r = ToolRegistry(confirm=lambda name, args: asked.append(dict(args)) or True)
+    register_api_tools(r, [{
+        "name": "regenerate_system_data",
+        "method": "POST",
+        "route_by": "site",
+        "routes": {"TW01": {"label": "Hsinchu", "url": "https://hsinchu/regen"},
+                   "TW02": {"label": "Tainan", "url": "https://tainan/regen"}},
+        "parameters": {"type": "object", "properties": {
+            "lot_num": {"type": "string", "pattern": LOT, "description": "lot number 8-2-2"},
+            "work_order": {"type": "string", "pattern": LNUM, "description": "L number"}},
+            "required": ["lot_num", "work_order"]},
+        "combine": {"lot_key": "{lot_num}_{work_order}"},
+    }], session=sess)
+    return r, sess, asked
+
+
+def test_combine_sends_one_field_built_from_checked_parts(monkeypatch):
+    r, sess, asked = _combined_api(monkeypatch)
+    args = {"site": "TW02", "lot_num": "AB123456-0C-01", "work_order": "L2L16"}
+    assert json.loads(r.call("regenerate_system_data", args))["ok"]
+    assert sess.calls[0][1] == "https://tainan/regen"
+    assert sess.calls[0][2]["json"] == {"lot_key": "AB123456-0C-01_L2L16"}
+    assert asked == [args]  # the confirmation shows the two parts separately
+    # the model still sees two separate arguments
+    assert set(r.tools["regenerate_system_data"].parameters["properties"]) == {"site", "lot_num", "work_order"}
+
+
+def test_wrong_format_is_rejected_before_confirmation(monkeypatch):
+    r, sess, asked = _combined_api(monkeypatch)
+    bad = [
+        {"site": "TW01", "lot_num": "AB123456-0C-01", "work_order": "L2-L16"},
+        {"site": "TW01", "lot_num": "AB12345-0C-01", "work_order": "L2L16"},     # 7 characters
+        {"site": "TW01", "lot_num": "AB123456_0C_01", "work_order": "L2L16"},
+        {"site": "TW01", "lot_num": "L2L16", "work_order": "AB123456-0C-01"},    # swapped
+    ]
+    for args in bad:
+        err = json.loads(r.call("regenerate_system_data", args))["error"]
+        assert "does not match the required format" in err, args
+    missing = json.loads(r.call("regenerate_system_data", {"site": "TW01", "lot_num": "AB123456-0C-01"}))
+    assert "work_order" in missing["error"] and "required" in missing["error"]
+    assert sess.calls == [] and asked == []
+
+
+def test_combine_config_errors():
+    with pytest.raises(ValueError, match="not in parameters"):
+        register_api_tools(ToolRegistry(), [{"name": "a", "url": "https://x", "combine": {"k": "{nope}_x"},
+                                             "parameters": {"type": "object", "properties": {"a": {}}}}])
+    with pytest.raises(ValueError, match="uses no"):
+        register_api_tools(ToolRegistry(), [{"name": "a", "url": "https://x", "combine": {"k": "fixed"}}])
+
+
+def test_schema_check_rules():
+    from agent.tools.validation import check_arguments
+
+    schema = {"type": "object", "required": ["n"], "properties": {
+        "n": {"type": "integer", "minimum": 1, "maximum": 31},
+        "kind": {"type": "string", "enum": ["a", "b"]},
+        "tags": {"type": "array", "items": {"type": "string", "pattern": "^[a-z]+$"}, "maxItems": 2},
+        "opt": {"type": "object", "required": ["x"], "properties": {"x": {"type": "boolean"}}},
+    }}
+    assert check_arguments(schema, {"n": 5, "kind": "a", "tags": ["ok"], "opt": {"x": True}, "extra": 1}) == []
+    assert check_arguments(schema, {"n": 5, "kind": None}) == []           # null optional = not given
+    assert "n must be integer" in check_arguments(schema, {"n": "5"})[0]   # strings aren't coerced
+    assert "n must be integer" in check_arguments(schema, {"n": True})[0]
+    assert "<= 31" in check_arguments(schema, {"n": 40})[0]
+    assert "not one of" in check_arguments(schema, {"n": 1, "kind": "c"})[0]
+    assert "tags[1]" in check_arguments(schema, {"n": 1, "tags": ["ok", "NO"]})[0]
+    assert "at most 2" in check_arguments(schema, {"n": 1, "tags": ["a", "b", "c"]})[0]
+    assert check_arguments(schema, {"n": 1, "opt": {}}) == ["opt.x is required"]
+    assert check_arguments(schema, {}) == ["n is required"]
+
+
+def test_tools_can_opt_out_of_schema_check():
+    from agent import Tool
+
+    r = ToolRegistry()
+    r.register(Tool(name="t", description="", parameters={"type": "object", "properties": {
+        "n": {"type": "integer"}}}, func=lambda n: {"n": n}, check_schema=False))
+    assert json.loads(r.call("t", {"n": "5"})) == {"n": "5"}
+
+
+def test_api_tool_is_generic_and_steps_are_opt_in():
+    from agent.tools.api_hooks import CombineStep, RouteStep
+    from agent.tools.api_tools import ApiEndpoint
+
+    plain = ApiEndpoint({"name": "plain", "method": "POST", "url": "https://x/a"})
+    assert plain.steps == []
+    tool = plain.to_tool()
+    assert tool.prepare is None and tool.validate is None and tool.description == "[POST API] "
+
+    both = ApiEndpoint({"name": "both", "route_by": "site", "routes": {"A": {"url": "https://a"}},
+                        "parameters": {"type": "object", "properties": {"x": {"type": "string"}}},
+                        "combine": {"key": "{site}-{x}"}})
+    assert [type(s) for s in both.steps] == [RouteStep, CombineStep]
+    sess = FakeSession()
+    both.session = sess
+    r = ToolRegistry(confirm=lambda n, a: True)
+    r.register(both.to_tool())
+    r.call("both", {"site": "a", "x": "1"})
+    assert sess.calls[0][1] == "https://a" and sess.calls[0][2]["json"] == {"key": "A-1"}
