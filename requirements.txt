@@ -1,6 +1,7 @@
 requests>=2.31
 pymongo>=4.6
 PyYAML>=6.0
+markdown>=3.5        # only for APIs with fill format: html
 fastapi>=0.110
 uvicorn>=0.29
 # tests

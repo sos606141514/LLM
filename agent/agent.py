@@ -6,6 +6,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from .llm_client import LLMClient
+from .tools import context as tool_context
 from .tools.registry import ConfirmFn, ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -34,8 +35,18 @@ class Agent:
     def reset(self) -> None:
         self.messages = self.messages[:1]
 
+    def previous_answers(self) -> List[str]:
+        """The agent's final answers so far (not tool-call steps), most recent first."""
+        return [m["content"] for m in reversed(self.messages)
+                if m.get("role") == "assistant" and not m.get("tool_calls") and m.get("content")]
+
     def run(self, user_input: str, confirm: Optional[ConfirmFn] = None) -> str:
         """Answer one user message. `confirm` overrides the registry's confirmation handler."""
+        # Tools can read the earlier answers (e.g. to email one of them); see tools/context.py.
+        with tool_context.use(tool_context.CallContext(answers=self.previous_answers())):
+            return self._run(user_input, confirm)
+
+    def _run(self, user_input: str, confirm: Optional[ConfirmFn]) -> str:
         self.last_trace = []
         self.messages.append({"role": "user", "content": user_input})
         tools = self.registry.schemas()

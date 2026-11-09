@@ -5,6 +5,7 @@ one API lives here as a step, and only APIs whose config uses a step's keys get 
 
     route_by / routes / send_route_param   RouteStep: pick the endpoint by an argument (e.g. per site)
     combine                                CombineStep: send one field built from several arguments
+    fill                                   FillStep: fill a field from the conversation (e.g. an answer)
 
 To add a new kind of step: subclass Step, implement `from_spec`, and add it to STEP_TYPES.
 """
@@ -13,6 +14,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
+
+from . import context as tool_context
 
 _FIELD = re.compile(r"\{(\w+)\}")
 _NAME = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
@@ -71,7 +74,7 @@ class RouteStep(Step):
 
         route_by: site
         routes:
-          TW01: {label: Hsinchu, url: https://a/regen, headers: {Authorization: Bearer ${A_TOKEN}}}
+          TW01: {label: Hsinchu, url: "https://a/regen", headers: {Authorization: "Bearer ${A_TOKEN}"}}
           TW02: {label: Tainan,  url: https://b/regen}
         send_route_param: false   # true = also send `site` (default: it only picks the endpoint)
 
@@ -216,9 +219,127 @@ class CombineStep(Step):
         return req
 
 
+class FillStep(Step):
+    """Fill request fields from the conversation instead of letting the model write them.
+
+        fill:
+          content:
+            from: answer      # one of the agent's earlier answers, copied word for word
+            format: html      # html (Markdown converted to HTML) or text (as is)
+
+    The model picks which answer with `which_answer` (1 = most recent). The filled text is shown in
+    the confirmation prompt, so the user sees exactly what will be sent.
+    """
+
+    SOURCES = {"answer"}
+    FORMATS = {"text", "html"}
+    PARAM = "which_answer"
+
+    def __init__(self, name: str, fill: Dict[str, Dict[str, str]]):
+        self.name, self.fill = name, fill
+        for target, rule in fill.items():
+            if rule["from"] not in self.SOURCES:
+                raise ValueError(f"API '{name}': fill.{target}.from must be one of {sorted(self.SOURCES)}")
+            if rule["format"] not in self.FORMATS:
+                raise ValueError(f"API '{name}': fill.{target}.format must be one of {sorted(self.FORMATS)}")
+            if rule["format"] == "html":
+                _markdown_module(name)  # fail at startup, not when the first email is sent
+
+    @classmethod
+    def from_spec(cls, spec: Dict[str, Any]) -> Optional["FillStep"]:
+        fill = spec.get("fill")
+        if not fill:
+            return None
+        rules = {}
+        for target, rule in fill.items():
+            if isinstance(rule, str):  # shorthand: `content: answer`
+                rule = {"from": rule}
+            if not isinstance(rule, dict) or "from" not in rule:
+                raise ValueError(f"API '{spec.get('name')}': fill.{target} needs `from`")
+            rules[str(target)] = {"from": str(rule["from"]), "format": str(rule.get("format", "text"))}
+        return cls(spec.get("name"), rules)
+
+    def schema(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        schema = dict(parameters)
+        props = {k: v for k, v in (schema.get("properties") or {}).items() if k not in self.fill}
+        props[self.PARAM] = {
+            "type": "integer", "minimum": 1,
+            "description": (f"Which of your earlier answers to send as {', '.join(self.fill)}: 1 = your most "
+                            "recent answer, 2 = the one before, and so on. Your own follow-up questions "
+                            "(e.g. asking who to send it to) count as answers, so skip past them. "
+                            "The text is copied by the program; do not write it yourself."),
+        }
+        schema["properties"] = props
+        schema["required"] = [r for r in (schema.get("required") or []) if r not in self.fill]
+        schema.setdefault("type", "object")
+        return schema
+
+    def _answer(self, args: Dict[str, Any]) -> Optional[str]:
+        answers = tool_context.current().answers
+        n = args.get(self.PARAM) or 1
+        if not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= len(answers):
+            return None
+        return answers[n - 1]
+
+    def prepare(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        args.setdefault(self.PARAM, 1)
+        text = self._answer(args)
+        for target in self.fill:
+            if text is None:
+                args.pop(target, None)
+            else:
+                args[target] = text  # shown in the confirmation; converted when sent
+        return args
+
+    def validate(self, args: Dict[str, Any]) -> Optional[str]:
+        count = len(tool_context.current().answers)
+        if count == 0:
+            return ("There is no earlier answer in this conversation to send. "
+                    "Answer the user's question first, then call this tool.")
+        if self._answer(args) is None:
+            return f"{self.PARAM} must be between 1 and {count} (there are {count} earlier answers)."
+        return None
+
+    def apply(self, req: Request) -> Request:
+        problem = self.validate(req.checked)
+        if problem:
+            raise ValueError(problem)
+        req.args.pop(self.PARAM, None)
+        text = self._answer(req.checked)
+        for target, rule in self.fill.items():
+            req.args[target] = markdown_to_html(text, self.name) if rule["format"] == "html" else text
+        return req
+
+
+_CELL_STYLE = "border:1px solid #ccc;padding:4px 8px"
+
+
+def markdown_to_html(text: str, api_name: str = "") -> str:
+    """Markdown (as the model writes it) -> HTML for an email body.
+
+    `<` and `&` are escaped first, so HTML inside the answer is shown as text, never run or rendered.
+    """
+    md = _markdown_module(api_name)
+    safe = text.replace("&", "&amp;").replace("<", "&lt;")
+    out = md.markdown(safe, extensions=["tables", "fenced_code", "sane_lists", "nl2br"])
+    # Email clients ignore stylesheets, so give tables visible borders inline.
+    return (out.replace("<table>", '<table style="border-collapse:collapse">')
+               .replace("<th>", f'<th style="{_CELL_STYLE}">')
+               .replace("<td>", f'<td style="{_CELL_STYLE}">'))
+
+
+def _markdown_module(api_name: str):
+    try:
+        import markdown
+    except ImportError as e:  # pragma: no cover - depends on the installation
+        raise ImportError(f"API '{api_name}' uses fill format html, which needs the 'markdown' package: "
+                          "pip install markdown") from e
+    return markdown
+
+
 # Applied in this order. Each step reads the model's checked arguments from `Request.checked`,
 # so the order only matters when two steps write the same request field.
-STEP_TYPES = [RouteStep, CombineStep]
+STEP_TYPES = [RouteStep, CombineStep, FillStep]
 
 
 def build_steps(spec: Dict[str, Any]) -> List[Step]:
